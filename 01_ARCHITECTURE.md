@@ -68,9 +68,16 @@ Bundle {
   block_path        : L2 path  subtree root → block Merkle root
   header            : L3        the 80-byte header whose merkle_root closes block_path
   anchor (optional) : L4 path  header → accumulator root + the carrying generation tx’s own
-                                L0–L2 path to a recent block, for header-pruned verifiers
+                                L0–L2 path to a recent block, PLUS that carrying block’s full
+                                80-byte header, for header-pruned verifiers
 }
 ```
+
+> **Security (RT-1).** The anchor carries the carrying block’s **full header**, and a
+> header-pruned verifier MUST check that header is on its most-work chain and that its
+> committed Merkle root equals the anchor’s `CarryingBlockMerkleRoot` before trusting the
+> accumulator. Otherwise `CarryingBlockMerkleRoot` is attacker-chosen and the accumulator
+> inherits no PoW. See `SECURITY.md` RT-1.
 
 The L0–L3 portion of a bundle is **frozen forever** once the block is sealed: a buried transaction's path to its block root never changes. This is the central maintenance result and the key improvement over Utreexo (§5.3).
 
@@ -95,7 +102,7 @@ Flow stays `Bob → Alice → Bob → Network`.
 
 Double-spend protection is **orthogonal** to [1]–[5] and is provided by:
 - **(a)** Bob querying the live UTXO set for each `output_ref` (Teranode `utxo`/`asset` service). Confirms the output is still unspent at acceptance time.
-- **(b)** the **double-spend alert layer** (`mfspv/dsalert`): IPv6-multicast alerts carrying evidence of a conflicting spend, signed/attested using prior proof-of-work, letting Bob reject within the propagation window.
+- **(b)** the **double-spend alert layer** (`mfspv/dsalert`): IPv6-multicast alerts carrying **cryptographically verifiable** evidence of a conflicting spend — two distinct spends of the same outpoint, each signed by the outpoint owner's key (RT-2) — attested with prior proof-of-work. Bob counts an alert only when its signing key matches the key spending the output in the payment (owner-bound, RT-7), so third parties cannot fabricate conflicts. This lets Bob reject within the propagation window.
 - **(c)** a **merchant risk parameter τ**: Bob's policy for accepting 0-confirmation against value at risk and elapsed alert-quiet time. τ is set by Bob, not the protocol.
 
 ### 3.3 Why this is "give everything to Bob, fast"
@@ -167,7 +174,7 @@ Carbyne (arXiv 2504.16089, 2025) and Neonpool (arXiv 2412.16217, 2024) treat DoS
 Forging any L0–L2 path requires a SHA-256 collision. Bob recomputes the path bottom-up and compares to `header.merkle_root`; mismatch ⇒ reject. **DONE.**
 
 ### 6.2 Chain soundness
-`header.merkle_root` is bound to the most-work chain either directly (Bob holds the constant-size header chain, L3) or via the L4 accumulator anchored in a PoW-sealed generation transaction. A false chain requires majority hash power (the assumption). **DONE.**
+`header.merkle_root` is bound to the most-work chain either directly (Bob holds the constant-size header chain, L3) or via the L4 accumulator anchored in a PoW-sealed generation transaction — where the carrying block's header must itself be on the verifier's chain with a matching Merkle root (RT-1), so the anchor genuinely inherits PoW. A false chain requires majority hash power (the assumption). **DONE.**
 
 ### 6.3 Merkle proof is fail-fast, not double-spend protection — stated explicitly
 Per the project's own construction, a valid inclusion proof shows the *input* transaction was mined; it does **not** show the output is still unspent. Double-spend exposure is closed by §3.2(a) live UTXO query, §3.2(b) alert layer, §3.2(c) τ. Conflating the Merkle proof with double-spend protection is a **defect**; the design keeps them separate. **DONE.**
@@ -180,6 +187,20 @@ Malformed bundles are rejected by the first failing hash in the fail-fast check 
 
 ### 6.6 Privacy
 Field-level MTxID lets Alice reveal **only the spent output's fields and their L0 path**, not the whole input transaction — a strict improvement over FlyClient's atomic-transaction leaf, which forces revealing/handling the entire transaction. The bundle still reveals the specific outpoint and its block to Bob; further unlinkability is out of scope and flagged in §7. **CLASSIFY: partial; improvement over atomic-leaf designs; residual leakage disclosed.**
+
+### 6.7 Red-team hardening (adversarial audit; `SECURITY.md`)
+An adversarial review of the implementation found and fixed issues that the prose
+model glossed over. Each is now closed in code and asserted by a rejection test:
+- **RT-1 (L4 PoW binding).** The accumulator anchor must bind its `CarryingBlockMerkleRoot`
+  to a header on the verifier's chain (carry the full header; check containment + root
+  match), else PoW is bypassed. §3.1, §6.2.
+- **RT-2 (alert evidence).** Conflict evidence is two owner-**signed** spends of the same
+  outpoint, not two bare hashes; forging requires the owner key. §3.2(b), §6.5.
+- **RT-7 (owner-bound alerts).** The merchant counts a conflict only when its signing key
+  equals the key spending the output, so third parties cannot fabricate conflicts. §3.2(b).
+- **RT-3 (malleability).** Non-canonical (high-S) signatures are rejected at the till.
+- **Confirmed safe:** internal-node-as-leaf / 64-byte-preimage (blocked by mandatory L0),
+  serialization DoS (bounded reader), boundary path lengths. **DONE.**
 
 ---
 

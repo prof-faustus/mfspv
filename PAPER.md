@@ -1,6 +1,6 @@
 # Merkle-Forest SPV: Sender-Held Inclusion Proofs for Simplified Payment Verification at 10⁶–10¹⁰ Transactions per Second
 
-**Status:** design + analysis + evaluation plan. **No implementation results are reported, because none exist yet; claiming any would be fabrication.** The contributions are a protocol design, a derived (falsifiable) scaling model, a security analysis with every assumption marked, and an honest positioning against the literature. Implementation, simulation, and measurement are specified in the companion design files (`02_MODULE_SPECS.md`, `03_SCALING_MODEL.md`, `04_TEST_PLAN.md`) for separate execution.
+**Status:** design + analysis + **reference implementation with a passing test suite**. A complete, zero-dependency Go implementation of the construction now exists (packages `commitment, crypto, accumulator, teranode, bundle, payment, walletalice, walletbob, dsalert, bench`; 61 tests). Every falsifiable scaling prediction in §6 is reproduced by the simulator (`mfspv/bench`), and every security property in §7 is encoded and asserted by a rejection test (`04_TEST_PLAN.md` T1–T7, A1–A5, and the red-team suite RT-1…RT-7 in `SECURITY.md`). What is **not** claimed: production throughput benchmarks — the performance figures are (i) arithmetic derivations and (ii) single-machine reference measurements (per-core hash rate, edge verification rate), used to derive capacity, not a deployed-network measurement. Transaction *ordering* at scale is Teranode's responsibility and is bounded by Teranode, not by this construction (§4.4, §6 R5).
 
 **Scope:** BSV / Teranode only. No Bitcoin-Core (BTC) parameter, code path, or assumption is used; where a quantity is BSV-specific (80-byte header, ~600 s block) it is marked.
 
@@ -39,6 +39,8 @@ The light-client literature optimises Stage 1. FlyClient [L1] replaces linear he
 4. **A push delivery protocol** (§4.3) in which the payer holds and ships the proof bundle, generalising the author's Merchant→Customer→Merchant→Network flow [P3] and Utreexo's owner-maintained proofs [L3], making the per-payment proof network cost zero and refuting the *pull* premise of TxChain [L4] at the level of paradigm.
 5. **A derived scaling model** (§6) with an exact target table the simulator must reproduce, turning every performance claim into a falsifiable prediction rather than an assertion.
 6. **A security analysis** (§7) under the standard minority-hash assumption, with every required condition marked tested / demonstrated / asserted, and the absent-periods limitation stated explicitly (§8).
+7. **A reference implementation** (zero external dependencies, Go) that realises L0–L4, the push protocol, the offline/PoS wallets, the alert layer, and the simulator, with a passing test suite that reproduces §6's table exactly through 10¹¹ tx/s and asserts §7's rejections.
+8. **An adversarial (red-team) audit** (§7.8, `SECURITY.md`) that found and fixed three implementation-level vulnerabilities the prose model had glossed over — an L4 proof-of-work bypass, forgeable double-spend alerts, and signature malleability — each now closed and covered by a rejection test.
 
 ### 1.4 What this paper does not claim
 
@@ -172,26 +174,129 @@ Derivations: `T(r) = r·t` transactions/block; inclusion path `depth(r) = ⌈log
 
 - **R1.** From 10⁶ to 10¹⁰ tx/s the inclusion proof grows by **13 hashes = 416 bytes** (960 → 1376 B). Logarithmic.
 - **R2.** The header dataset is **constant at ~4.2 MB/year** for every `r`. This is the quantity FlyClient-style Stage-1 compression competes to reduce; it does not scale with `r`, so the competition is over a fixed, already-small constant.
-- **R3.** Inclusion-verification compute is `≤ depth` hash compressions (≤43) plus signature checks plus one header lookup — sub-millisecond on commodity hardware; the simulator must show it growing with `log₂ T`, with the linear-in-`T` hypothesis rejected by regression.
+- **R3.** Inclusion-verification compute is `≤ depth` hash compressions (≤46 at 10¹¹ tx/s) plus signature checks plus one header lookup — sub-millisecond on commodity hardware; the simulator shows it growing with `log₂ T`, with the linear-in-`T` hypothesis rejected by regression. *Reference measurement:* ~13.7 µs per depth-46 verify on one software core (3.4 M SHA-256d/s), i.e. ~73k verifies/s/core, scaling linearly with cores (`bench.VerifyThroughput`).
 - **R4.** Per-payment proof network cost is **0** under the push model; the simulator emits, for contrast, the bytes a pull-model verifier would fetch (the legacy SPV / [L4] regime).
+- **R5 (capacity at 100 billion tx/s).** Two costs are kept separate. *Edge:* verification is stateless and embarrassingly parallel, so an N-core fabric sustains `N × ~73k` payment-verifications/s, independent of `r`. *Sealing* (Teranode's job): building the Merkle forest for a block of `T` tx is `T−1` internal hashes (the subtree split adds none), so the network-wide Merkle hash rate to seal at rate `r` is `≈ r` (marginal) to `≈ 2r` (incl. leaf/TXID hashing) SHA-256d/s. At `r = 10¹¹` that is `≈ 2×10¹¹` SHA-256d/s `≈ ~2,000` hardware-accelerated (SHA-NI) cores across `≈ 95,367` subtrees/s of 2²⁰ TXIDs — the horizontal-scale model Teranode already follows. `r` is bounded by Teranode validation/propagation, not by SPV (Result 4.4). Reproduced by `bench.PlanCapacity` from a measured per-core hash rate; asserted by `bench.TestCapacity100BillionTPS`.
 
-These four numbers are the empirical core to be validated. They are arithmetic from stated BSV parameters; if a benchmark contradicts them, the implementation is wrong, not the model.
+These numbers are the empirical core. R1–R2/R4–R5(derivation) are arithmetic from stated BSV parameters; if a benchmark contradicts them the implementation is wrong, not the model. R3 and R5's core-count are single-machine reference measurements scaled by core count, not a deployed-network benchmark (§1 status, §8).
 
 ---
 
 ## 7. Security analysis
 
-We trace each security property to the conditions it requires and classify each condition.
+We state each property as a claim, give its reduction (proof sketch), and name the
+**executable rejection test** that falsifies it if the implementation deviates. The
+adversary model is §3: forge proofs, present an alternative chain, fabricate alerts,
+spam malformed bundles, or act as a malicious miner; the adversary cannot break
+SHA-256d ([A2]) or forge ECDSA, and the most-work chain is honest under the standard
+minority-hash assumption ([A1]). Notation: `H` = SHA-256d; `Fold` = the leaf→root
+path collapse; a verifier accepts a path iff `Fold(leaf, path)` equals the committed
+root.
 
-- **Inclusion soundness.** A forged bundle requires a SHA-256d collision somewhere on the L0→L3 path. **Condition:** [A2]. **Status: reduces to a standard, demonstrated assumption.** Test: `04_TEST_PLAN.md` A1 — any collision-free forgery must be **rejected**.
-- **Chain soundness.** Accepting a block not on the most-work chain requires defeating PoW. **Condition:** [A1]. **Status: inherited, standard; weaker than (c,L) [L1], hence stronger guarantee.** Test: A2 — an alternative header chain without majority work must not anchor.
-- **Inclusion ≠ double-spend.** The proof does not assert unspentness; this is a *property*, not a vulnerability, and is handled by §4.4. **Status: stated.** Test: A2/T3.5 — a valid inclusion proof for a double-spent output must still be rejected by the live check, never accepted on the proof alone.
-- **Spam / DoS resistance.** Malformed bundles fail at the first bad hash, `O(depth)`, no network call (§4.3). **Status: demonstrated by construction; to be load-tested** (context from [R2], [R3]). Test: A3.
-- **Alert integrity (double-spend layer).** Alerts are PoW-attested [P3]; unattested alerts are dropped. **Status: design-level; to be tested.** Test: A4 — alert flooding without evidence must be dropped.
-- **Reorg / re-anchoring.** A bundle anchored to an orphaned block must be detected and re-anchored. **Status: OPEN — not fully specified; see §8.** Test: A5 — `NeedsReanchor` true and `Verify` false until re-anchored.
-- **Field-level privacy.** Revealing one field discloses only that field and its path (§4.2). **Status: demonstrated by construction;** unlinkability beyond this is **OPEN** (§8).
+**Lemma 1 (Path soundness).** For a fixed committed root `R`, producing any `(leaf',
+path')` with `leaf'` not the committed leaf such that `Fold(leaf', path') = R`
+requires a SHA-256d collision or second-preimage.
+*Proof.* `Fold` is a chain of `H(·‖·)` applications. If two distinct `(leaf,path)`
+pairs reach the same `R`, then at the highest level where the intermediate values
+differ, two distinct 64-byte inputs hash to the same value — a collision of `H`. ∎
+*Test:* `commitment.TestT1_2_ForgeryRejected`, `adversarial.TestA1_ForgeryRejected`
+(flipping any sibling, leaf, or root ⇒ reject).
 
-**No causal or security claim here rests on an `[ABSTRACT]`-level reference.** [A1] and [A2] are the standard consensus and hash assumptions; everything else is either demonstrated by construction or marked open and assigned a falsifying test.
+**Theorem 1 (Inclusion soundness).** Under [A2], a `bundle.Verify` that returns
+`true` implies the revealed field is committed, via MTxID = TXID and the L1/L2 path,
+to `Header`'s Merkle root.
+*Proof.* `Verify` recomputes `mtxid = Fold(leaf, MTxIDPath)` and checks `mtxid =
+OutputRef.TXID` (L0 is mandatory), then `Fold` through L1, L2 and checks equality
+with `HeaderMerkleRoot(Header)`. By Lemma 1 each step is sound under [A2]; a `true`
+result therefore exhibits a genuine commitment chain. ∎
+*Test:* `bundle.TestT3_1`, `bundle.TestT3_2` (each level corrupted ⇒ fail-fast with
+the matching reason).
+
+**Corollary 1.1 (No internal-node-as-leaf / 64-byte-tx attack).** Because L0 is
+mandatory, a claimed TXID must be reconstructed from revealed fields. Passing an
+*internal* Merkle node off as a leaf TXID would require fields whose field-tree root
+equals that node — a second-preimage of `H`. *Test:*
+`adversarial.TestRT4_InternalNodeAsLeafRejected`. This is a strict improvement over
+classic SPV, which is vulnerable to the 64-byte-transaction confusion.
+
+**Theorem 2 (Chain soundness).** Under [A1], a `true` from `Verify` binds `Header`
+to the most-work chain.
+*Proof.* Either (5a) `headersView.Contains(Header)` — the verifier holds the header
+on its most-work chain; or (5b) the L4 anchor binds it. For (5b), `anchorBindsToChain`
+requires (i) the carrying block's full header is on the verifier's chain, (ii) its
+committed Merkle root equals `CarryingBlockMerkleRoot`, and (iii) `VerifyAnchor`
+shows `AccRoot` is committed in that block's generation transaction; then
+`VerifyBlockInChain` proves `Header` ∈ `AccRoot`. Thus `AccRoot` inherits the
+carrying block's PoW. Forging either path requires a heavier-work chain, i.e.
+majority hash power, excluded by [A1]. ∎
+*Tests:* `adversarial.TestA2_AlternativeChainRejected` (off-chain header rejected),
+`bundle.TestL4PrunedVerifier` (pruned verifier accepts a sound anchor),
+`adversarial.TestRT1_AnchorRequiresTrustedCarrier` (an anchor without a trusted
+carrying header is rejected — the RT-1 PoW-bypass fix).
+
+**Theorem 3 (Inclusion ≠ double-spend, kept separate).** A valid inclusion proof
+for an output that has since been spent still verifies, and acceptance still
+requires the orthogonal liveness checks.
+*Proof.* Inclusion is a historical fact about a sealed block; spentness is a
+property of the live UTXO set. `bundle.Verify` tests only the former.
+`walletbob.AcceptPayment` accepts only if inclusion **and** `IsUnspent` **and**
+owner-bound alert-quiet **and** signature/template all hold (I-BB1). ∎
+*Tests:* `bundle.TestT3_5_InclusionNotDoubleSpend`,
+`walletbob.TestT4_4_AcceptanceSeparation`.
+
+**Theorem 4 (Alert unforgeability).** An admissible double-spend alert can only be
+produced by a party holding the outpoint owner's private key.
+*Proof.* `VerifyAlert` requires two distinct spends of the same outpoint, each with
+a canonical (low-S) ECDSA signature, both valid under one `OwnerPubKey`, over
+`H(outpoint‖spendTxID)`. Producing two such signatures without the private key
+contradicts ECDSA unforgeability. At the point of sale (`QuietForOwners`) the alert
+counts only if `OwnerPubKey` equals the key spending the output in the payment, so a
+third party cannot fabricate a conflict for an outpoint they do not own. ∎
+*Tests:* `dsalert.TestT5_1_EvidenceGated`, `dsalert.TestFloodIneffective`,
+`dsalert.TestRT7_OwnerBoundAlerts`, `adversarial.TestA4_AlertFloodDropped`.
+
+**Theorem 5 (Non-malleable authorisation).** An accepted payment's input signatures
+are canonical, so a third party cannot maul the broadcast transaction's id by
+flipping `S`.
+*Proof.* `payment.VerifyInputSignature` rejects any signature with `S > n/2`; the
+malleated form `(r, n−S)` is therefore not accepted even though it verifies under
+raw ECDSA. ∎ *Test:* `adversarial.TestRT3_HighSRejected`.
+
+**Proposition 6 (Spam/DoS bounded).** Malformed bundles are rejected in `O(depth)`
+work with no network call, and a malicious length prefix cannot force a large
+allocation.
+*Justification.* `Verify` fails at the first bad hash; the deserializer is bounded
+by the input buffer and caps path lengths at the 255 depth ceiling. *Tests:*
+`adversarial.TestA3_SpamRejectedFailFast`, `adversarial.TestRT5_SerializationDoS`,
+`adversarial.TestRT6_BoundaryPathLengths`, `commitment.TestT1_6_DepthCeiling`.
+
+**Proposition 7 (Reorg safety).** A bundle whose block is orphaned does not verify
+until re-anchored; `Reanchor` never mutates the frozen L0 (intra-transaction) data.
+*Tests:* `adversarial.TestA5_OrphanedBlockReanchor`, `bundle.TestT3_3_FrozenCore`,
+`bundle.TestT3_4_Reanchor`.
+
+**Proposition 8 (Field-level privacy).** Revealing one field discloses only that
+field and its L0 path; the rest of the transaction stays hidden (a strict
+improvement over atomic-leaf designs [L1]). Unlinkability beyond this is OPEN (§8).
+*Test:* `bundle.TestT3_*` (bundles carry only the revealed field, I-B3).
+
+**No causal or security claim rests on an `[ABSTRACT]`-level reference.** [A1] and
+[A2] are the standard consensus and hash assumptions; every other claim above is
+reduced to them and has an executable falsifying test.
+
+### 7.8 Red-team hardening (adversarial audit)
+
+An adversarial audit of the *implementation* (not just the prose) found and fixed
+issues the model had glossed over. Each is now closed and asserted by a rejection
+test; full write-up in `SECURITY.md`.
+
+| ID | Severity | Issue | Fix | Test |
+|---|---|---|---|---|
+| RT-1 | HIGH | L4 anchor trusted an attacker-supplied carrying root ⇒ PoW bypass | bind carrying *header* to the verifier's chain (Thm 2) | `TestRT1_*`, `TestL4PrunedVerifier` |
+| RT-2 | HIGH | alert "evidence" was two bare hashes ⇒ forgeable flood | require two owner-**signed** spends (Thm 4) | `TestT5_1`, `TestFloodIneffective` |
+| RT-7 | HIGH | owner key not bound to the outpoint ⇒ flood with own key | owner-bound PoS check `QuietForOwners` (Thm 4) | `TestRT7_OwnerBoundAlerts` |
+| RT-3 | MED | high-S signatures accepted ⇒ txid malleability | reject non-canonical sigs (Thm 5) | `TestRT3_HighSRejected` |
+| RT-4/5/6 | — | internal-node-as-leaf; serialization DoS; path bounds | confirmed safe (Cor 1.1, Prop 6) | `TestRT4/5/6_*` |
 
 ---
 
@@ -202,19 +307,20 @@ We trace each security property to the conditions it requires and classify each 
 3. **Reorg re-anchoring.** Detection and re-anchoring of bundles whose block is orphaned is specified at the interface level (`Reanchor`) but the policy is not fully worked out. Open.
 4. **Double-spend latency.** Out of scope for the proof; end-to-end latency depends on the orthogonal layer (§4.4). Not claimed.
 5. **Evidence dependency on blocked PDFs.** `eprint.iacr.org` PDFs were robots-blocked; FlyClient [L1] and SoK [L2] were read in full via alternate routes, but Utreexo [L3] and all other ePrint items were not. The related-work claims drawn from `[ABSTRACT]`-level items are positioning, not evidence; before journal submission their full texts must be obtained and re-read (`05_REFERENCES.md`, honest dependency).
-6. **No implementation results.** This is a design paper. Performance claims are derived predictions (§6) awaiting the simulation specified in `04_TEST_PLAN.md`.
+6. **Implementation is a reference, not a production benchmark.** A complete zero-dependency Go implementation now exists and its test suite reproduces §6's table and asserts §7's rejections. But the performance figures are arithmetic plus single-machine measurements (per-core hash rate, edge verify rate) used to *derive* capacity — they are **not** a deployed-network throughput benchmark, and §6 R5's core-count is an extrapolation. A production deployment must (a) wire the read-only adapters to a pinned Teranode revision (`01_ARCHITECTURE.md §7` dep #2), (b) replace the `math/big` secp256k1 signer with a constant-time, audited curve (the present signer is correct but not side-channel-hardened), and (c) perform standard full transaction validation (script + value conservation) at the till, which is node-standard and orthogonal to the MF-SPV proof.
+7. **Red-team residuals.** The adversarial audit (§7.8, `SECURITY.md`) closed three vulnerabilities; the documented residuals are the constant-time signer and the value-conservation check above, both deployment-layer, not defects in the construction.
 
 ---
 
 ## 9. Conclusion
 
-For BSV at scale, the scaling lever is not where the light-client literature has put it. Sublinear chain synchronisation optimises a dataset that, at 80-byte headers and 10-minute blocks, is ~4.2 MB/year and does not grow with throughput, and it costs a stronger assumption and a header fork. MF-SPV optimises the inclusion stage and the delivery model instead: a five-level Merkle hierarchy that is already present in Teranode and needs no consensus change for its core, field-level proofs from [P1], sender-pushed bundles whose historical portion is frozen at block-sealing time, and double-spend handling kept orthogonal to the proof. The derived model predicts inclusion proofs growing by 416 bytes across four orders of magnitude of throughput, with per-payment proof network cost zero. Those predictions are falsifiable and specified for test. The limitations — absent periods under the optional off-header accumulator, privacy, reorg re-anchoring, and the outstanding full-text reads — are stated here rather than discovered later.
+For BSV at scale, the scaling lever is not where the light-client literature has put it. Sublinear chain synchronisation optimises a dataset that, at 80-byte headers and 10-minute blocks, is ~4.2 MB/year and does not grow with throughput, and it costs a stronger assumption and a header fork. MF-SPV optimises the inclusion stage and the delivery model instead: a five-level Merkle hierarchy that is already present in Teranode and needs no consensus change for its core, field-level proofs from [P1], sender-pushed bundles whose historical portion is frozen at block-sealing time, and double-spend handling kept orthogonal to the proof. The derived model predicts inclusion proofs growing by 416 bytes across four orders of magnitude of throughput (960→1376 B from 10⁶ to 10¹⁰ tx/s; 1472 B at **10¹¹ tx/s — 100 billion**), with per-payment proof network cost zero. These predictions are now not merely specified but **reproduced** by a reference implementation whose test suite (61 tests) matches the table exactly and asserts every security rejection, and the construction has survived an adversarial audit (§7.8) that hardened the L4 anchor, the alert layer, and signature handling. The limitations — absent periods under the optional off-header accumulator, privacy, reorg re-anchoring, the deployment-layer items of §8, and the outstanding full-text reads — are stated here rather than discovered later.
 
 ---
 
 ## Appendix A — Build artifacts
 
-Design and build are specified in the companion files for separate execution (Claude Code), not in this manuscript: `01_ARCHITECTURE.md` (full architecture, namespace `mfspv`, build order), `02_MODULE_SPECS.md` (Go interfaces, invariants, conditions), `03_SCALING_MODEL.md` (the simulator's exact target table), `04_TEST_PLAN.md` (T1–T7 functional and A1–A5 adversarial tests; every security test asserts that forgeries are **rejected**).
+Design, build, and audit are in the companion files and the `mfspv` Go module (now implemented): `01_ARCHITECTURE.md` (architecture, namespace `mfspv`, build order), `02_MODULE_SPECS.md` (Go interfaces, invariants, conditions — updated to the hardened protocol), `03_SCALING_MODEL.md` (the simulator's exact target table through 10¹¹/10¹² tx/s), `04_TEST_PLAN.md` (T1–T7 functional and A1–A5 adversarial tests; every security test asserts a **rejection**), `SECURITY.md` (red-team audit), and `README.md` (run instructions). Build order: `commitment → bundle → {wallet_alice, wallet_bob} → teranode_adapter → accumulator → dsalert → bench`. The demonstration runner is `cmd/mfspv`.
 
 ## Appendix B — Optional encrypted-delivery path
 
@@ -223,3 +329,34 @@ Where Bob's request carries a data payload, the request/response and ECDH-derive
 ## Appendix C — Reference depths
 
 All sources, their verified URLs, read-depths, and tier scores are in `05_REFERENCES.md`. Load-bearing sources: [P1]–[P5] (full primary), [L1] (full), [L2] (full), [L3] (corroborated push-model precedent only). All other references are positioning at the depth stated and are not relied upon as evidence.
+
+## Appendix D — Claim → falsifying test (proof-ready map)
+
+Every load-bearing claim is backed by an executable test; the construction is
+"proof-ready" in the sense that each result can be falsified by running one named
+test. All 61 pass (`go test ./...`, forced, no cache); `go vet` and `gofmt` clean.
+
+| Claim | Result/Lemma | Test(s) |
+|---|---|---|
+| Inclusion path is `ceil(log2 T)` | R1 / §6 table | `commitment.TestT1_3_DepthLaw`, `bench.TestT7_TargetTable` |
+| Proof +416 B over 10⁶→10¹⁰; 1472 B at 10¹¹ | R1 | `bench.TestR1_ProofGrowth`, `bench.TestScale100BillionTPS` |
+| Header dataset constant ~4.2 MB/yr | R2 | `bench.TestT7_3_HeaderConstant` |
+| Verify ∝ log T, not linear | R3 | `bench.TestT7_4_LogarithmicVerify`, `bench.TestEdgeThroughputScales` |
+| Push proof network cost = 0 | R4 | `bench.TestT7_5_PushVsPull` |
+| 100B tx/s sealing capacity derivation | R5 | `bench.TestCapacity100BillionTPS` |
+| Path/inclusion soundness | Lem 1 / Thm 1 | `commitment.TestT1_2_*`, `bundle.TestT3_1/2`, `adversarial.TestA1_*` |
+| No 64-byte / internal-node attack | Cor 1.1 | `adversarial.TestRT4_InternalNodeAsLeafRejected` |
+| Chain soundness + L4 PoW binding | Thm 2 | `adversarial.TestA2_*`, `TestRT1_*`, `bundle.TestL4PrunedVerifier` |
+| Inclusion ≠ double-spend | Thm 3 | `bundle.TestT3_5`, `walletbob.TestT4_4` |
+| Alert unforgeability + owner-binding | Thm 4 | `dsalert.TestT5_1`, `TestRT7_*`, `adversarial.TestA4_*` |
+| Signature non-malleability | Thm 5 | `adversarial.TestRT3_HighSRejected` |
+| Spam/DoS bounded | Prop 6 | `adversarial.TestA3_*`, `TestRT5_*`, `TestRT6_*` |
+| Reorg safety / frozen core | Prop 7 | `adversarial.TestA5_*`, `bundle.TestT3_3/3_4` |
+| Accumulator append-only + gap honesty | §4.1 / §8(1) | `accumulator.TestT2_1`, `TestT2_3_GapHonesty` |
+| Offline wallet / no keys at till | I-AL1 / I-BB2 | `walletbob.TestT4_1/4_2/4_3` |
+
+## Appendix E — Security audit
+
+The adversarial (red-team) audit, its findings (RT-1…RT-7), fixes, and confirmed-safe
+surfaces are documented in `SECURITY.md`. Three vulnerabilities found in the
+implementation were fixed and are now covered by rejection tests (§7.8).

@@ -109,7 +109,14 @@ type Bundle struct {
 type AnchorProof struct {
   AccRoot Hash; AccPath []PathElem
   GenTxFields commitment.TxFields; GenL0,GenL1,GenL2 []PathElem; CarryingBlockMerkleRoot Hash
+  CarryingHeader [80]byte   // SECURITY (RT-1): the carrying block's full header.
 }
+// RT-1 (red-team fix): the L4 branch MUST bind CarryingBlockMerkleRoot to a header
+// the verifier actually trusts, else accRoot inherits no PoW (an attacker could
+// supply any CarryingBlockMerkleRoot). The verifier requires:
+//   headersView.Contains(CarryingHeader) AND
+//   HeaderMerkleRoot(CarryingHeader) == CarryingBlockMerkleRoot
+// before trusting VerifyAnchor/VerifyBlockInChain. See bundle.anchorBindsToChain.
 ```
 
 ### Functions
@@ -126,7 +133,11 @@ Verify(b Bundle, headersView HeaderChain) (ok bool, depth int, reason string)
      3. VerifyBlockPath(subtreeRoot, BlockPath) → blockMerkleRoot      ; else reason="L2"
      4. blockMerkleRoot == Header.merkleRoot                           ; else reason="L3-bind"
      5a. headersView.Contains(Header)                                  ; else go to 5b
-     5b. if Anchor!=nil: accumulator.VerifyAnchor && VerifyBlockInChain; else reason="L3/L4-chain"
+     5b. if Anchor!=nil AND anchorBindsToChain(Anchor,headersView):
+            (i.e. headersView.Contains(Anchor.CarryingHeader)
+             AND HeaderMerkleRoot(CarryingHeader)==CarryingBlockMerkleRoot
+             AND accumulator.VerifyAnchor(...))                        // RT-1 PoW binding
+         then VerifyBlockInChain(Header, Anchor.AccPath, Anchor.AccRoot); else reason="L3/L4-chain"
    NOTE: Verify proves INCLUSION only. It is FAIL-FAST against spam/error, NOT double-spend
          protection (see wallet_bob for double-spend).
 
@@ -172,8 +183,9 @@ AcceptPayment(msg []byte, policy RiskPolicy) (Decision, error)
    1. Deserialize bundles + Tx3.
    2. For each input: bundle.Verify(...)            → inclusion (fail-fast).   [LOCAL]
    3. For each input.OutputRef: utxoClient.IsUnspent(outpoint).               [NETWORK: Teranode utxo]
-   4. dsalert.QuietFor(outpoints, policy.Window)    → no conflicting-spend alert seen.
-   5. Verify Alice's signatures; verify Tx3 matches template & amount.
+   4. dsalert.QuietForOwners({outpoint→input.PubKey}, policy.Window)  → no owner-bound
+      conflicting-spend alert seen (RT-7).                            [NETWORK: alert bus]
+   5. Verify Alice's signatures (canonical low-S only, RT-3); verify Tx3 matches template.
    6. Decision = policy.Decide(valueAtRisk, allInclusionOK, allUnspent, alertQuiet, elapsed).
 Broadcast(tx Tx3) error                                                      [NETWORK]
 type RiskPolicy struct { Tau float64; Window time.Duration; /* merchant-set */ }
@@ -184,6 +196,10 @@ type RiskPolicy struct { Tau float64; Window time.Duration; /* merchant-set */ }
 - I-BB2 **No keys at till:** wallet stores only receiving public keys, never private keys.
 - I-BB3 **τ is policy:** the protocol provides signals; the accept/reject threshold is `RiskPolicy`,
   owned by the merchant, never hard-coded in the protocol.
+- I-BB4 **Canonical signatures (RT-3):** non-canonical (high-S) input signatures are rejected
+  (malleability defence), via `payment.VerifyInputSignature` / `crypto.Signature.IsLowS`.
+- I-BB5 **Owner-bound alerts (RT-7):** the alert check is keyed to the spending input's pubkey
+  (`QuietForOwners`); alerts signed by any other key are ignored.
 
 ---
 
@@ -215,13 +231,28 @@ IPv6-multicast alerts; project's reputation/PoW-attested alert mechanism.
 
 ```
 Subscribe(group IPv6Group) (<-chan Alert, error)
-type Alert struct { Outpoint Outpoint; ConflictEvidence []byte; AttesterPoW []byte; Sig []byte }
-VerifyAlert(a Alert) (ok bool)            // checks evidence shows a real conflicting spend + attestation
-QuietFor(outpoints []Outpoint, window time.Duration) (quiet bool)
+type ConflictEvidence struct {                 // RT-2: cryptographically verifiable
+  OwnerPubKey []byte                           // 33-byte compressed key
+  SpendA Hash; SigA []byte                     // owner sig over H(outpoint‖SpendA)
+  SpendB Hash; SigB []byte                     // owner sig over H(outpoint‖SpendB)
+}
+type Alert struct { Outpoint Outpoint; Evidence ConflictEvidence; AttesterPoW []byte }
+SignSpend(key, out, spendTx) ([]byte,error)            // owner authorisation of a spend
+BuildEvidence(key, out, spendA, spendB) (ConflictEvidence,error)
+Attest(out, ev) Alert                                  // mines PoWBits over the whole alert
+VerifyAlert(a Alert) (ok bool)                         // see I-DS1
+QuietFor(outpoints, window) (quiet bool)                   // owner-AGNOSTIC, advisory only
+QuietForOwners(map[Outpoint][]byte, window) (quiet bool)   // owner-BOUND (RT-7), PoS use
 ```
 ### Invariants
-- I-DS1 **Evidence-gated:** an alert with no verifiable conflicting-spend evidence is dropped
-  (prevents alert-flooding as a censorship/DoS vector).
+- I-DS1 **Evidence-gated (RT-2):** an admissible alert MUST carry two DISTINCT spends
+  of the same outpoint, BOTH signed (canonical low-S) by the SAME `OwnerPubKey`, plus a
+  valid PoW attestation. Two bare hashes are NOT evidence; forging an alert requires the
+  owner's private key. Prevents alert-flooding as a censorship/DoS vector.
+- I-DS3 **Owner-bound at PoS (RT-7):** the merchant counts a conflict only when the
+  alert's `OwnerPubKey` equals the key spending the output in the payment under
+  evaluation (`QuietForOwners`); a third party cannot manufacture a conflict for an
+  outpoint they do not own.
 - I-DS2 **Advisory:** alerts feed `RiskPolicy`; they are not consensus.
 
 ---

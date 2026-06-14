@@ -123,6 +123,36 @@ func TestFloodIneffective(t *testing.T) {
 	}
 }
 
+// RT-7: QuietForOwners ignores a (valid) alert signed by a key OTHER than the one
+// spending the outpoint — only the spender's own double-spend counts.
+func TestRT7_OwnerBoundAlerts(t *testing.T) {
+	bus := NewBus()
+	owner := ownerKey("real-owner")
+	attacker := ownerKey("attacker")
+	out := op(7)
+
+	// Attacker signs a bogus "conflict" for the victim's outpoint with their OWN key.
+	atkEv, _ := BuildEvidence(attacker, out, txid("a1"), txid("a2"))
+	if !bus.Publish(Attest(out, atkEv)) {
+		t.Fatal("bus should accept a cryptographically valid alert")
+	}
+	// Owner-bound query for the real owner's key must stay quiet (attacker ignored).
+	owners := map[Outpoint][]byte{out: owner.Public().SerializeCompressed()}
+	if !bus.QuietForOwners(owners, time.Hour) {
+		t.Fatal("RT-7: non-owner alert flipped the owner-bound quiet window")
+	}
+	// Owner-agnostic QuietFor does see it (advisory).
+	if bus.QuietFor([]Outpoint{out}, time.Hour) {
+		t.Fatal("owner-agnostic QuietFor should see the alert")
+	}
+	// Now the real owner double-spends: owner-bound query must flip.
+	ownEv, _ := BuildEvidence(owner, out, txid("o1"), txid("o2"))
+	bus.Publish(Attest(out, ownEv))
+	if bus.QuietForOwners(owners, time.Hour) {
+		t.Fatal("RT-7: owner-signed double-spend not detected")
+	}
+}
+
 // Subscribers receive verified alerts.
 func TestSubscribeDelivery(t *testing.T) {
 	bus := NewBus()

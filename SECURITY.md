@@ -36,6 +36,21 @@ ECDSA signatures** over `H(outpoint ‖ spendTxID)` for two distinct spends.
 private key — i.e. it can only be produced by an actual double-spender. Tests:
 `dsalert.TestT5_1_EvidenceGated`, `TestFloodIneffective`, `adversarial.TestA4_*`.
 
+### RT-7 (HIGH, FIXED) — alert owner-key not bound to the outpoint (RT-2 was incomplete)
+**Was:** after RT-2, `VerifyAlert` proved "the holder of `OwnerPubKey` signed two
+spends of outpoint O" — but never checked that `OwnerPubKey` is authorised to spend
+O. An attacker could generate their OWN key, sign two messages naming a victim's
+outpoint, and produce a "valid" alert, reopening the flood/censorship vector with a
+different key.
+**Fix:** the point-of-sale check is now owner-bound. `Bus.QuietForOwners` matches a
+verified alert only when its signing key equals the key actually spending the output
+in the payment under evaluation; `walletbob.AcceptPayment` passes each input's
+pubkey. A third party signing a bogus conflict with their own key is ignored; only
+the real spender's double-spend flips acceptance. Tests:
+`dsalert.TestRT7_OwnerBoundAlerts`, `walletbob.TestTauAndAlertBehaviour`
+(non-owner alert does not flip; owner-signed alert does). The owner-agnostic
+`QuietFor` is retained for advisory use only.
+
 ### RT-3 (MEDIUM, FIXED) — ECDSA signature malleability
 **Was:** raw `crypto.Verify` accepts both `(r, s)` and `(r, n−s)`; the payment
 verifier did not enforce canonical form, so a third party could malleate an
@@ -77,6 +92,6 @@ raw ECDSA but is rejected by the payment layer).
 
 ## Test posture
 
-60 tests pass (forced, no cache): T1.1–T7.5 functional, A1–A5 + RT-1/3/4/5/6
+61 tests pass (forced, no cache): T1.1–T7.5 functional, A1–A5 + RT-1/3/4/5/6/7
 adversarial, scale/capacity/throughput at 10¹¹ tx/s. `go vet` and `gofmt` clean.
 Every adversarial test asserts a **rejection**.

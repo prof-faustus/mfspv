@@ -130,7 +130,7 @@ func (w *Wallet) AcceptPayment(msg []byte, template payment.Tx3, valueAtRisk flo
 
 	// 3. Liveness (NETWORK). Distinct from inclusion (I-BB1).
 	d.AllUnspent = true
-	var outpoints []dsalert.Outpoint
+	owners := map[dsalert.Outpoint][]byte{}
 	for i := range m.Tx.Inputs {
 		op := teranode.Outpoint{TXID: m.Tx.Inputs[i].Prev.TXID, Vout: m.Tx.Inputs[i].Prev.Vout}
 		unspent, err := w.utxo.IsUnspent(op)
@@ -140,13 +140,15 @@ func (w *Wallet) AcceptPayment(msg []byte, template payment.Tx3, valueAtRisk flo
 		if !unspent {
 			d.AllUnspent = false
 		}
-		outpoints = append(outpoints, dsalert.Outpoint{TXID: op.TXID, Vout: op.Vout})
+		// Bind the alert check to the key actually spending this output, so a third
+		// party cannot manufacture a conflict for it with their own key (RT-7).
+		owners[dsalert.Outpoint{TXID: op.TXID, Vout: op.Vout}] = m.Tx.Inputs[i].PubKey
 	}
 
-	// 4. Alert-quiet window.
+	// 4. Alert-quiet window — owner-bound (only the spender's own double-spend counts).
 	d.AlertQuiet = true
 	if w.alerts != nil {
-		d.AlertQuiet = w.alerts.QuietFor(outpoints, policy.Window)
+		d.AlertQuiet = w.alerts.QuietForOwners(owners, policy.Window)
 	}
 
 	// 5. Signatures + template match.

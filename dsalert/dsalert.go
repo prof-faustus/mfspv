@@ -192,18 +192,26 @@ func VerifyAlert(a Alert) (ok bool) {
 // IPv6Group is a multicast group address (modelled as a string here).
 type IPv6Group string
 
+// alertRec is one verified alert observation.
+type alertRec struct {
+	ts       time.Time
+	ownerPub string // compressed owner pubkey that signed the conflict
+}
+
 // Bus is an in-process stand-in for the IPv6-multicast transport. It records
-// verified alerts with timestamps so QuietFor can answer the merchant's policy.
+// verified alerts (with the signing owner key) so the merchant policy can be
+// answered — including the owner-bound check that prevents third parties forging
+// conflicts for outpoints they do not own (RT-7).
 type Bus struct {
 	mu   sync.Mutex
 	subs []chan Alert
-	seen map[Outpoint]time.Time // last VERIFIED alert per outpoint
+	seen map[Outpoint][]alertRec // verified alerts per outpoint
 	now  func() time.Time
 }
 
 // NewBus creates an alert bus.
 func NewBus() *Bus {
-	return &Bus{seen: map[Outpoint]time.Time{}, now: time.Now}
+	return &Bus{seen: map[Outpoint][]alertRec{}, now: time.Now}
 }
 
 // SetClock overrides the clock (tests).
@@ -227,7 +235,7 @@ func (b *Bus) Publish(a Alert) bool {
 		return false
 	}
 	b.mu.Lock()
-	b.seen[a.Outpoint] = b.now()
+	b.seen[a.Outpoint] = append(b.seen[a.Outpoint], alertRec{ts: b.now(), ownerPub: string(a.Evidence.OwnerPubKey)})
 	subs := append([]chan Alert(nil), b.subs...)
 	b.mu.Unlock()
 	for _, ch := range subs {
@@ -239,15 +247,46 @@ func (b *Bus) Publish(a Alert) bool {
 	return true
 }
 
-// QuietFor reports whether NONE of the outpoints has a verified alert within the
-// trailing window. quiet==true means no conflicting-spend alert was seen.
+// QuietFor reports whether NONE of the outpoints has ANY verified alert within the
+// trailing window (advisory, owner-agnostic). For point-of-sale acceptance prefer
+// QuietForOwners, which binds the alert to the spender's key (RT-7).
 func (b *Bus) QuietFor(outpoints []Outpoint, window time.Duration) (quiet bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	cutoff := b.now().Add(-window)
 	for _, op := range outpoints {
-		if ts, ok := b.seen[op]; ok && ts.After(cutoff) {
-			return false
+		for _, rec := range b.seen[op] {
+			if rec.ts.After(cutoff) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// QuietForOwners reports whether none of the (outpoint -> spender pubkey) pairs has
+// a verified conflicting-spend alert SIGNED BY THAT SPENDER within the window.
+//
+// This is the point-of-sale check: only a double-spend authorised by the SAME key
+// that is spending the output in the payment counts. A third party signing a bogus
+// "conflict" for someone else's outpoint with their own key is ignored — closing
+// the residual flood/censorship vector left by owner-agnostic checks (RT-7).
+//
+// owners maps each outpoint to the compressed pubkey used to spend it in the
+// payment under evaluation. An outpoint absent from owners is treated owner-agnostic.
+func (b *Bus) QuietForOwners(owners map[Outpoint][]byte, window time.Duration) (quiet bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	cutoff := b.now().Add(-window)
+	for op, pub := range owners {
+		want := string(pub)
+		for _, rec := range b.seen[op] {
+			if !rec.ts.After(cutoff) {
+				continue
+			}
+			if want == "" || rec.ownerPub == want {
+				return false
+			}
 		}
 	}
 	return true

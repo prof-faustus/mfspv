@@ -188,20 +188,39 @@ func TestTauAndAlertBehaviour(t *testing.T) {
 	s3 := newScenario(t)
 	msg3, template3 := s3.pay(t)
 	op := dsalert.Outpoint{TXID: s3.fund.OutputRef.TXID, Vout: 0}
-	dsSeed := sha256.Sum256([]byte("double-spender"))
-	dsKey, _ := crypto.NewPrivateKey(dsSeed[:])
-	ev, err := dsalert.BuildEvidence(dsKey, op,
+
+	// RT-7: an alert signed by a DIFFERENT key (not the key spending this output)
+	// must be IGNORED — a third party cannot manufacture a conflict for someone
+	// else's outpoint. Acceptance must stand.
+	otherSeed := sha256.Sum256([]byte("not-the-owner"))
+	otherKey, _ := crypto.NewPrivateKey(otherSeed[:])
+	evOther, err := dsalert.BuildEvidence(otherKey, op,
+		commitment.DoubleSHA256([]byte("x1")), commitment.DoubleSHA256([]byte("x2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s3.bus.Publish(dsalert.Attest(op, evOther)) {
+		t.Fatal("bus should accept a cryptographically valid (if irrelevant) alert")
+	}
+	dStands, _ := s3.bobW.AcceptPayment(msg3, template3, 900, RiskPolicy{Tau: 5000, Window: time.Minute})
+	if !dStands.Accepted {
+		t.Fatal("RT-7: acceptance flipped on an alert signed by a non-owner key")
+	}
+
+	// A GENUINE double-spend is signed by the SAME key Alice uses to spend the
+	// output (she is the owner) — this must flip acceptance to reject.
+	ev, err := dsalert.BuildEvidence(s3.aliceK, op,
 		commitment.DoubleSHA256([]byte("honest-spend")),
 		commitment.DoubleSHA256([]byte("double-spend")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !s3.bus.Publish(dsalert.Attest(op, ev)) {
-		t.Fatal("genuine alert not accepted by bus")
+		t.Fatal("genuine owner-signed alert not accepted by bus")
 	}
 	d3, _ := s3.bobW.AcceptPayment(msg3, template3, 900, RiskPolicy{Tau: 5000, Window: time.Minute})
 	if d3.Accepted {
-		t.Fatal("accepted despite a verified conflicting-spend alert")
+		t.Fatal("accepted despite a verified owner-signed conflicting-spend alert")
 	}
 	if d3.AlertQuiet {
 		t.Fatal("alert window should not be quiet")
