@@ -92,6 +92,11 @@ raw ECDSA but is rejected by the payment layer).
 
 ## Test posture
 
-61 tests pass (forced, no cache): T1.1–T7.5 functional, A1–A5 + RT-1/3/4/5/6/7
-adversarial, scale/capacity/throughput at 10¹¹ tx/s. `go vet` and `gofmt` clean.
-Every adversarial test asserts a **rejection**.
+74 tests pass (forced, no cache; order-independent under `-shuffle=on`): T1–T7 and
+A1–A5; the red-team suite RT-1..7; and the publication-grade evaluation of
+`06_EVALUATION_DESIGN.md` — known-answer tests (double-SHA256, secp256k1 2G, RFC 6979
+nonce), a differential Merkle oracle over odd cardinalities, property tests at 10⁵
+cases, Monte-Carlo inclusion-forgery (10⁶ trials, 0 accepted, Clopper–Pearson
+`p_upper ≤ 4.6×10⁻⁶`), and a scaling-law regression rejecting linear-in-T
+(R²(log)=0.999 vs R²(T)=0.40); plus scale/capacity/throughput at 10¹¹ tx/s.
+`go vet` and `gofmt` clean. Every adversarial test asserts a **rejection**.

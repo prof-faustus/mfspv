@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"mfspv/commitment"
 )
 
 // The exact target table from 03_SCALING_MODEL.md. The simulator must match it.
@@ -125,6 +127,75 @@ func TestEdgeThroughputScales(t *testing.T) {
 		t.Fatalf("throughput did not scale with cores: 1-core=%.0f/s %d-core=%.0f/s", ps1, workers, psN)
 	}
 	t.Logf("edge: depth-46 verify 1-core=%.0f/s %d-core=%.0f/s", ps1, workers, psN)
+}
+
+// EQ3 (06 §6.4): scaling-law falsification. Measured Verify-fold latency is
+// regressed on depth (= log2 T) and on T; the linear-in-T model is rejected. The
+// fit vs depth is near-perfect (latency is literally proportional to depth), while
+// vs T it is a poor (concave) fit, demonstrating logarithmic — not linear — cost.
+func TestEQ3_ScalingLawRegression(t *testing.T) {
+	if testing.Short() {
+		t.Skip("regression timing skipped in -short")
+	}
+	depths := []int{8, 12, 16, 20, 24, 30, 36, 43, 50}
+	var xsDepth, xsT, ys []float64
+	for _, d := range depths {
+		leaf := commitment.DoubleSHA256([]byte("eq3"))
+		path := make([]commitment.PathElem, d)
+		for i := range path {
+			path[i] = commitment.PathElem{Sibling: commitment.DoubleSHA256([]byte{byte(i)}), Right: i%2 == 0}
+		}
+		root := commitment.Fold(leaf, path)
+		const iters = 20000
+		start := time.Now()
+		for i := 0; i < iters; i++ {
+			if commitment.Fold(leaf, path) != root {
+				t.Fatal("fold mismatch")
+			}
+		}
+		ns := float64(time.Since(start).Nanoseconds()) / iters
+		xsDepth = append(xsDepth, float64(d))
+		xsT = append(xsT, math.Exp2(float64(d)))
+		ys = append(ys, ns)
+	}
+	r2log := rSquared(xsDepth, ys)
+	r2lin := rSquared(xsT, ys)
+	t.Logf("EQ3: R^2(latency~depth=log2 T)=%.4f  R^2(latency~T)=%.4f", r2log, r2lin)
+	if r2log < 0.95 {
+		t.Fatalf("EQ3: latency-vs-log2(T) fit too poor (R^2=%.3f); expected near-linear in depth", r2log)
+	}
+	if r2log <= r2lin {
+		t.Fatalf("EQ3: linear-in-T not rejected (R^2 log=%.3f <= R^2 lin=%.3f)", r2log, r2lin)
+	}
+}
+
+// rSquared returns the coefficient of determination of an OLS line y = a + b x.
+func rSquared(xs, ys []float64) float64 {
+	n := float64(len(xs))
+	var sx, sy, sxx, sxy float64
+	for i := range xs {
+		sx += xs[i]
+		sy += ys[i]
+		sxx += xs[i] * xs[i]
+		sxy += xs[i] * ys[i]
+	}
+	den := n*sxx - sx*sx
+	if den == 0 {
+		return 0
+	}
+	b := (n*sxy - sx*sy) / den
+	a := (sy - b*sx) / n
+	var ssRes, ssTot float64
+	mean := sy / n
+	for i := range xs {
+		pred := a + b*xs[i]
+		ssRes += (ys[i] - pred) * (ys[i] - pred)
+		ssTot += (ys[i] - mean) * (ys[i] - mean)
+	}
+	if ssTot == 0 {
+		return 0
+	}
+	return 1 - ssRes/ssTot
 }
 
 // R1: from 1e6 to 1e10 the proof grows by exactly 13 hashes = 416 bytes.

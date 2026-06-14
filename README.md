@@ -47,9 +47,19 @@ alert layer, and a merchant risk parameter τ.
 ## Run
 
 ```sh
-go test ./...        # 52 tests: T1.1–T7.5 functional + A1–A5 adversarial
-go run ./cmd/mfspv   # prints the scaling table and drives one full push payment
+go test ./...               # 74 tests: T1–T7, A1–A5, RT-1..7, KAT, differential, property, Monte-Carlo
+go test -shuffle=on ./...   # order-independent (06_EVALUATION_DESIGN §3.4)
+go run ./cmd/mfspv          # scaling table + capacity + one full push payment
+go run ./cmd/mfspv -eval    # emit environment.json + claims.csv, tagged M/D/S (06 §8 reproduce)
 ```
+
+The evaluation follows `06_EVALUATION_DESIGN.md` (publication-grade, ACM-artifact
+standard): known-answer tests against published vectors (double-SHA256, the secp256k1
+2G constant, the RFC 6979 nonce), a differential Merkle oracle over odd cardinalities,
+property tests at 10⁵ cases, Monte-Carlo inclusion-forgery (10⁶ trials, 0 accepted,
+Clopper–Pearson `p_upper ≤ 4.6×10⁻⁶`), and a scaling-law regression that statistically
+rejects linear-in-T (R²(log)=0.999 vs R²(T)=0.40). `claims.csv` maps every claim ID to
+its falsifying test.
 
 Demonstration output (abridged):
 
