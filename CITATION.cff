@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software or its results, please cite it as below."
+title: "MF-SPV: Merkle-Forest SPV — sender-held inclusion proofs for BSV/Teranode at 10^6–10^11 tx/s"
+abstract: >-
+  A reference implementation and evaluation artifact for Merkle-Forest SPV (MF-SPV):
+  a five-level Merkle commitment hierarchy (transaction fields -> TXID -> subtree root
+  -> block root -> header, plus an optional off-header header accumulator) that reuses
+  Teranode's subtree structure, ships inclusion proofs sender-pushed with the payment,
+  and freezes the historical proof at block-sealing. Includes a derived scaling model,
+  a security analysis with executable rejection tests, a red-team audit, and a
+  publication-grade evaluation harness. BSV/Teranode only.
+type: software
+authors:
+  - family-names: "Wright"
+    given-names: "Craig"
+keywords:
+  - BSV
+  - Teranode
+  - SPV
+  - Merkle proof
+  - light client
+  - blockchain scaling
+license: "SEE-LICENSE-FILE"   # author to set (e.g. MIT/Apache-2.0/BSV); not imposed here.
+repository-code: "https://example.invalid/mfspv"   # set to the published repo / Zenodo DOI
+version: "0.1.0"
+date-released: "2026-06-15"
