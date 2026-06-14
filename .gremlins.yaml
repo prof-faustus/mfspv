@@ -1,0 +1,32 @@
+# gremlins mutation-testing config (06_EVALUATION_DESIGN.md §4.4 / §10).
+#
+# This is the EXTERNAL-TOOL path (needs `gremlins`, which needs network to install:
+#   go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+#   gremlins unleash ./...
+# ). The repo also ships a zero-dependency, offline gate: `go run ./cmd/mutate`,
+# which targets the security-critical operators directly and is the authoritative
+# CI gate here.
+#
+# Pre-registered gate: efficacy (mutation score) >= 85%.
+silent: false
+dry-run: false
+
+unit-test:
+  timeout: 10m
+  tags: ""
+
+# Statistical / pass thresholds (06 §10: score >= 0.85).
+threshold-efficacy: 85
+threshold-mcover: 0
+
+# Mutation operators to apply (focus: comparison/boolean flips that 06 names).
+mutants:
+  conditionals_negation: true
+  conditionals_boundary: true
+  invert_negatives: true
+  invert_loop_ctrl: true
+  invert_logical: true
+  arithmetic_base: true
+  increment_decrement: true
+  invert_bitwise: false
+  invert_bwassign: false

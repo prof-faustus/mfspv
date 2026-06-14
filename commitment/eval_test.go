@@ -48,7 +48,10 @@ func naiveRoot(leaves []Hash) Hash {
 // historical source of Bitcoin Merkle bugs). (06 §4.3)
 func TestDifferentialMerkle(t *testing.T) {
 	rng := rand.New(rand.NewSource(0x5EED))
-	const cases = 20000
+	cases := 20000
+	if testing.Short() {
+		cases = 2000
+	}
 	for c := 0; c < cases; c++ {
 		n := 1 + rng.Intn(33) // 1..33 leaves -> exercises odd levels
 		leaves := make([]Hash, n)
@@ -84,7 +87,10 @@ func randFields(rng *rand.Rand) TxFields {
 // P1 round-trip + P2 determinism + P3 reconstruct, over 1e5 cases. (T1.1/T1.4/T1.5)
 func TestProperty_RoundTripDeterminismReconstruct(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	const cases = 100000
+	cases := 100000
+	if testing.Short() {
+		cases = 2000
+	}
 	for c := 0; c < cases; c++ {
 		f := randFields(rng)
 		idx := uint8(rng.Intn(len(f)))
@@ -112,7 +118,11 @@ func TestProperty_RoundTripDeterminismReconstruct(t *testing.T) {
 // P4 depth bound: no generated path exceeds 255; over-long paths hard-error. (T1.6)
 func TestProperty_DepthBound(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
-	for c := 0; c < 100000; c++ {
+	cases := 100000
+	if testing.Short() {
+		cases = 2000
+	}
+	for c := 0; c < cases; c++ {
 		f := randFields(rng)
 		_, path, _, _ := MTxIDPath(f, uint8(rng.Intn(len(f))))
 		if len(path) > MaxDepth {

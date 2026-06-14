@@ -186,6 +186,8 @@ AcceptPayment(msg []byte, policy RiskPolicy) (Decision, error)
    4. dsalert.QuietForOwners({outpoint→input.PubKey}, policy.Window)  → no owner-bound
       conflicting-spend alert seen (RT-7).                            [NETWORK: alert bus]
    5. Verify Alice's signatures (canonical low-S only, RT-3); verify Tx3 matches template.
+   5b. Value conservation: if the UTXOClient implements ValueOracle, require
+       Σ input values ≥ Σ output values, else reason="value:underfunded" (I-BB6). [NETWORK]
    6. Decision = policy.Decide(valueAtRisk, allInclusionOK, allUnspent, alertQuiet, elapsed).
 Broadcast(tx Tx3) error                                                      [NETWORK]
 type RiskPolicy struct { Tau float64; Window time.Duration; /* merchant-set */ }
@@ -200,6 +202,8 @@ type RiskPolicy struct { Tau float64; Window time.Duration; /* merchant-set */ }
   (malleability defence), via `payment.VerifyInputSignature` / `crypto.Signature.IsLowS`.
 - I-BB5 **Owner-bound alerts (RT-7):** the alert check is keyed to the spending input's pubkey
   (`QuietForOwners`); alerts signed by any other key are ignored.
+- I-BB6 **Value conservation:** an underfunded payment (Σ inputs < Σ outputs) is rejected when a
+  `ValueOracle` is available; without one, value validation is delegated to the node at broadcast.
 
 ---
 
@@ -217,6 +221,7 @@ type ProofSource interface {
 }
 type HeaderChain interface { Contains(h [80]byte) bool; BestTipHeight() uint64 }
 type UTXOClient interface { IsUnspent(outpoint Outpoint) (bool, error) }   // Teranode utxo/asset
+type ValueOracle interface { OutputValue(outpoint Outpoint) (value uint64, unspent bool, err error) } // value conservation (I-BB6)
 ```
 ### Invariants
 - I-TA1 **No consensus mutation:** adapter is read-only; it never proposes header or block format change.

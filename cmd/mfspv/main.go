@@ -127,6 +127,8 @@ func claimsCSV() string {
 		{"S9", "signature malleability rejected (low-S)", "M", "adversarial.TestRT3_HighSRejected"},
 		{"S9b", "alert unforgeable + owner-bound (RT-2/RT-7)", "M", "dsalert.TestT5_1_EvidenceGated;TestRT7_OwnerBoundAlerts"},
 		{"S10", "no private keys at till", "M", "walletbob.TestT4_3_NoKeysAtTill"},
+		{"VAL", "value conservation: inputs>=outputs", "M", "walletbob.TestValueConservation"},
+		{"MUT", "security-critical mutants killed (>=0.85)", "M", "cmd/mutate (go run ./cmd/mutate)"},
 		{"KAT", "sha256d/2G/RFC6979 known-answer", "M", "crypto.TestKAT_TwoG;TestKAT_RFC6979Nonce;commitment.TestKAT_DoubleSHA256"},
 		{"DIFF", "merkle vs independent oracle (incl odd)", "M", "commitment.TestDifferentialMerkle"},
 	}
@@ -191,6 +193,7 @@ func runPayment() {
 	fmt.Printf("Sealed block with %d txs; block hash %x...\n", len(txids), blockHash[:6])
 
 	out := bundle.OutputRef{TXID: mtxid, Vout: 0}
+	node.SetOutputValue(teranode.Outpoint{TXID: mtxid, Vout: 0}, 1000) // value oracle: 1000 sats
 	fund, _ := bundle.Build(out, fields, 1, node)
 	data, _ := bundle.Serialize(fund)
 	fmt.Printf("Alice's bundle: %d path hashes (L1=%d, L2=%d), %d serialized bytes.\n",

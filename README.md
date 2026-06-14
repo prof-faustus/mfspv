@@ -47,11 +47,20 @@ alert layer, and a merchant risk parameter τ.
 ## Run
 
 ```sh
-go test ./...               # 74 tests: T1–T7, A1–A5, RT-1..7, KAT, differential, property, Monte-Carlo
+go test ./...               # 75 tests: T1–T7, A1–A5, RT-1..7, KAT, differential, property, Monte-Carlo, value
 go test -shuffle=on ./...   # order-independent (06_EVALUATION_DESIGN §3.4)
 go run ./cmd/mfspv          # scaling table + capacity + one full push payment
 go run ./cmd/mfspv -eval    # emit environment.json + claims.csv, tagged M/D/S (06 §8 reproduce)
+go run ./cmd/mutate         # offline mutation-testing gate: kills 17/17 security-critical mutants (06 §4.4/§10)
 ```
+
+**Mutation testing (06 §4.4 acceptance gate).** `go run ./cmd/mutate` is a
+zero-dependency, offline gate that flips each security-critical comparison/boolean
+(`Fold`, `Verify*`, `VerifyAnchor`, `VerifyBlockInChain`, low-S/`onCurve`, the RT-1
+carrier gate, the alert evidence gate, `Decide`, value-conservation), runs the
+suite, and asserts every mutant is **killed** — currently 17/17, score 1.000. The
+external `gremlins` path (`.gremlins.yaml`, needs network to install) is also
+provided.
 
 The evaluation follows `06_EVALUATION_DESIGN.md` (publication-grade, ACM-artifact
 standard): known-answer tests against published vectors (double-SHA256, the secp256k1

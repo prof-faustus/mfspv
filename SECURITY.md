@@ -85,10 +85,14 @@ raw ECDSA but is rejected by the payment layer).
 - **Live Teranode wiring.** Interfaces are read-only by construction (I-TA1); the
   `MockNode` builds real trees and a real accumulator. Binding to a pinned Teranode
   revision is the remaining integration step (01 §7 dependency #2).
-- **Alert-to-owner binding.** `VerifyAlert` proves the *key holder* double-spent;
-  cross-checking that key against a specific outpoint's locking script is the
-  merchant's policy layer (it sees Alice's input key) and is out of the alert
-  layer's scope.
+- **Alert-to-owner binding.** RT-7 binds an accepted alert to the *pubkey spending
+  the output in the payment* (`QuietForOwners`), closing third-party forgery. The
+  remaining nuance — proving that pubkey is the UTXO's rightful owner per its locking
+  script — is part of script-level validation (the deployment residual above), not
+  the alert layer.
+- **Value conservation.** Now enforced at the till via `ValueOracle` (Σ inputs ≥
+  Σ outputs; I-BB6, `walletbob.TestValueConservation`). Full *script* validation
+  remains node-standard and orthogonal to the MF-SPV proof.
 
 ## Test posture
 

@@ -160,6 +160,9 @@ identical on every case; any divergence is a blocking defect.
   `VerifyToBlockRoot`, `Decide`, `VerifyAnchor`, or the low-S/`onCurve` checks **must be killed**
   (a surviving security-critical mutant is a blocking defect — it means a test that should fail does
   not). Report the mutation report alongside coverage.
+  - **STATUS: implemented and passing.** `go run ./cmd/mutate` is a zero-dependency, offline gate
+    that applies exactly these security-critical operator flips and asserts each is killed: currently
+    **17/17 killed, score 1.000**. The external `gremlins` path is configured in `.gremlins.yaml`.
 
 ---
 

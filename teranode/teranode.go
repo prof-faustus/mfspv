@@ -62,6 +62,15 @@ type UTXOClient interface {
 	IsUnspent(outpoint Outpoint) (bool, error)
 }
 
+// ValueOracle returns the value (satoshis) of an output and whether it is unspent.
+// The Teranode utxo/asset service exposes the output (value + script) for an
+// outpoint; a point-of-sale till uses this to verify value conservation
+// (sum inputs >= sum outputs) before accepting — standard transaction validation,
+// kept here as an optional capability a UTXOClient may also implement.
+type ValueOracle interface {
+	OutputValue(outpoint Outpoint) (value uint64, unspent bool, err error)
+}
+
 var (
 	ErrUnknownTx     = errors.New("teranode: unknown transaction")
 	ErrUnknownBlock  = errors.New("teranode: unknown block")
@@ -105,6 +114,7 @@ type MockNode struct {
 	headers     [][80]byte // chain-ordered, for accumulator reconstruction
 	onBest      map[Hash]bool
 	spent       map[Outpoint]bool
+	values      map[Outpoint]uint64 // output values (satoshis), for the value oracle
 	subtreeSize int
 }
 
@@ -119,6 +129,7 @@ func NewMockNode(subtreeCap int) *MockNode {
 		txIndex:     map[Hash]txEntry{},
 		onBest:      map[Hash]bool{},
 		spent:       map[Outpoint]bool{},
+		values:      map[Outpoint]uint64{},
 		subtreeSize: subtreeCap,
 	}
 }
@@ -361,6 +372,20 @@ func (n *MockNode) MarkSpent(o Outpoint) {
 	n.spent[o] = true
 }
 
+// SetOutputValue records the value (satoshis) of an output for the value oracle.
+func (n *MockNode) SetOutputValue(o Outpoint, value uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.values[o] = value
+}
+
+// OutputValue returns an output's value and whether it is unspent (ValueOracle).
+func (n *MockNode) OutputValue(o Outpoint) (uint64, bool, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.values[o], !n.spent[o], nil
+}
+
 // Orphan removes a block from the best chain (reorg simulation).
 func (n *MockNode) Orphan(blockHash Hash) {
 	n.mu.Lock()
@@ -413,5 +438,6 @@ var (
 	_ ProofSource = (*MockNode)(nil)
 	_ HeaderChain = (*MockNode)(nil)
 	_ UTXOClient  = (*MockNode)(nil)
+	_ ValueOracle = (*MockNode)(nil)
 	_ HeaderChain = (*StaticHeaderChain)(nil)
 )

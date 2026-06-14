@@ -53,6 +53,7 @@ type Decision struct {
 	AlertQuiet   bool
 	SignaturesOK bool
 	TemplateOK   bool
+	ValueOK      bool // inputs >= outputs (value conservation); true if no value oracle
 }
 
 // Wallet is Bob's till.
@@ -161,8 +162,27 @@ func (w *Wallet) AcceptPayment(msg []byte, template payment.Tx3, valueAtRisk flo
 	}
 	d.TemplateOK = templateSatisfied(template, m.Tx)
 
+	// 5b. Value conservation (standard tx validation): sum(inputs) >= sum(outputs).
+	// Enforced when the UTXO client also provides a value oracle; otherwise the till
+	// delegates value validation to the node at broadcast (documented).
+	d.ValueOK = true
+	if vo, ok := w.utxo.(teranode.ValueOracle); ok {
+		var sumIn, sumOut uint64
+		for i := range m.Tx.Inputs {
+			v, _, err := vo.OutputValue(teranode.Outpoint{TXID: m.Tx.Inputs[i].Prev.TXID, Vout: m.Tx.Inputs[i].Prev.Vout})
+			if err != nil {
+				return d, err
+			}
+			sumIn += v
+		}
+		for i := range m.Tx.Outputs {
+			sumOut += m.Tx.Outputs[i].Value
+		}
+		d.ValueOK = sumIn >= sumOut
+	}
+
 	// 6. Final decision. Inclusion alone is never enough (I-BB1).
-	allOK := d.InclusionOK && d.SignaturesOK && d.TemplateOK
+	allOK := d.InclusionOK && d.SignaturesOK && d.TemplateOK && d.ValueOK
 	d.Accepted = allOK && policy.Decide(valueAtRisk, d.InclusionOK, d.AllUnspent, d.AlertQuiet)
 	if d.Accepted {
 		d.Reason = "accepted"
@@ -172,6 +192,8 @@ func (w *Wallet) AcceptPayment(msg []byte, template payment.Tx3, valueAtRisk flo
 			d.Reason = "signature"
 		case !d.TemplateOK:
 			d.Reason = "template"
+		case !d.ValueOK:
+			d.Reason = "value:underfunded"
 		case !d.AllUnspent:
 			d.Reason = "double-spend:utxo-spent"
 		case !d.AlertQuiet:

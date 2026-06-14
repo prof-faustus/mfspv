@@ -53,6 +53,9 @@ func newScenario(t *testing.T) *scenario {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Fund the spendable output with 1000 sats (value oracle) so a 900-sat payment
+	// satisfies value conservation.
+	node.SetOutputValue(teranode.Outpoint{TXID: mtxid, Vout: 0}, 1000)
 
 	aliceSeed := sha256.Sum256([]byte("alice-key"))
 	aliceK, _ := crypto.NewPrivateKey(aliceSeed[:])
@@ -224,6 +227,44 @@ func TestTauAndAlertBehaviour(t *testing.T) {
 	}
 	if d3.AlertQuiet {
 		t.Fatal("alert window should not be quiet")
+	}
+}
+
+// Value conservation: a payment whose outputs exceed the funded input value is
+// rejected as underfunded, even when inclusion/signature/template/liveness all pass.
+func TestValueConservation(t *testing.T) {
+	s := newScenario(t)
+	// Bob requests an output of 2000 sats, but Alice's input is only worth 1000.
+	template := payment.Tx3{
+		Version: 1,
+		Outputs: []payment.TxOut{{Value: 2000, ScriptPubKey: s.bobPub.SerializeCompressed()}},
+	}
+	signed, err := s.aliceW.FillTemplate(template, []bundle.Bundle{s.fund}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := s.aliceW.Export([]bundle.Bundle{s.fund}, signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.bobW.AcceptPayment(msg, template, 2000, RiskPolicy{Tau: 100000, Window: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Accepted {
+		t.Fatal("accepted an underfunded payment (inputs < outputs)")
+	}
+	if d.ValueOK {
+		t.Fatal("ValueOK should be false for an underfunded tx")
+	}
+	if d.Reason != "value:underfunded" {
+		t.Fatalf("reason = %q, want value:underfunded", d.Reason)
+	}
+	// Sanity: the same tx funded sufficiently is accepted.
+	s.node.SetOutputValue(teranode.Outpoint{TXID: s.fund.OutputRef.TXID, Vout: 0}, 3000)
+	d2, _ := s.bobW.AcceptPayment(msg, template, 2000, RiskPolicy{Tau: 100000, Window: time.Minute})
+	if !d2.Accepted {
+		t.Fatalf("sufficiently-funded payment rejected: %+v", d2)
 	}
 }
 
