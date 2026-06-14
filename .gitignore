@@ -1,0 +1,20 @@
+# Go build artifacts
+/mfspv
+/mfspv.exe
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+
+# Go workspace / vendor
+/vendor/
+go.work
+go.work.sum
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

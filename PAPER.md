@@ -1,0 +1,225 @@
+# Merkle-Forest SPV: Sender-Held Inclusion Proofs for Simplified Payment Verification at 10⁶–10¹⁰ Transactions per Second
+
+**Status:** design + analysis + evaluation plan. **No implementation results are reported, because none exist yet; claiming any would be fabrication.** The contributions are a protocol design, a derived (falsifiable) scaling model, a security analysis with every assumption marked, and an honest positioning against the literature. Implementation, simulation, and measurement are specified in the companion design files (`02_MODULE_SPECS.md`, `03_SCALING_MODEL.md`, `04_TEST_PLAN.md`) for separate execution.
+
+**Scope:** BSV / Teranode only. No Bitcoin-Core (BTC) parameter, code path, or assumption is used; where a quantity is BSV-specific (80-byte header, ~600 s block) it is marked.
+
+---
+
+## Abstract
+
+Simplified Payment Verification (SPV) as described in the Bitcoin white paper is a two-stage pipeline: establish that a header is on the most-work chain, then prove a transaction is inside that header's block. The light-client literature of the last decade has almost entirely optimised the first stage — compressing chain synchronisation from linear to sublinear (FlyClient [L1], the PoPoW family and recursive-SNARK clients surveyed in [L2]). We show by direct arithmetic that for BSV this stage is not the bottleneck: with 80-byte headers and ~10-minute blocks the entire header dataset is ~4.2 MB/year and is **independent of transaction rate**, so the prize those protocols compete for does not grow as throughput scales to 10⁶–10¹⁰ tx/s, and is bought at the price of a stronger trust assumption and a header-format fork.
+
+We instead optimise the second stage and the *delivery model*. We specify **Merkle-Forest SPV (MF-SPV)**: a five-level Merkle commitment hierarchy that already exists inside Teranode (transaction fields → TXID → subtree root → block root → header), extended at the field level by nChain's MTxID construction [P1] and, optionally, by a header accumulator committed off-header in the generation transaction. Inclusion proofs are assembled once by the payer and travel **with the payment** (the "push" model, generalising Utreexo's owner-maintained proofs [L3]), so the per-payment network cost of the proof is zero and the historical portion of every proof is **frozen the moment its block is sealed** — an improvement over accumulators whose state mutates each block.
+
+A derived model (not assumed) gives the headline result: across four orders of magnitude of throughput (10⁶ → 10¹⁰ tx/s) the inclusion proof grows by **13 hashes (416 bytes)**, from 960 to 1376 bytes, while the header dataset stays at 4.2 MB/year. We give a security analysis under the standard BSV minority-hash assumption — weaker than FlyClient's (c,L) assumption, hence a *stronger* guarantee — and we state, rather than hide, the limitation MF-SPV inherits from committing off-header: absent periods for non-participating miners ([P1] [0222]–[0223]).
+
+---
+
+## 1. Introduction
+
+### 1.1 Problem
+
+We want IP-to-IP payments between a payer (Alice) and a payee (Bob) in which Alice hands Bob everything needed to verify the payment — the transaction, its inclusion proofs, the relevant header — and Bob verifies locally and fast, with the construction holding as block contents scale to millions and ultimately ~10 billion transactions per second at an unchanged ~10-minute average block interval. The verification must be secure, robust, and efficient at that scale, and must run natively on Teranode [P5].
+
+### 1.2 The two-stage view of SPV, and which stage matters for BSV
+
+Standard SPV splits into:
+
+- **Stage 1 — chain validity.** Is this header the tip of the most-work chain? Classic SPV downloads and proof-of-work-checks every header (linear in chain length).
+- **Stage 2 — inclusion.** Is this transaction inside this header's block? Classic SPV supplies a Merkle path from the whole transaction to the header's Merkle root, forcing the verifier to obtain and hash the entire transaction to recompute its TXID.
+
+The light-client literature optimises Stage 1. FlyClient [L1] replaces linear header sync with a logarithmic sampling proof over a Merkle Mountain Range committed in the header; the PoPoW/recursive-SNARK family surveyed in [L2] pursues the same axis by other means. **This paper's position is that Stage 1 is the wrong target for BSV, and Stage 2 plus the delivery model is the right one.** §2.3 and §5 give the quantitative argument.
+
+### 1.3 Contributions
+
+1. **A quantitative refutation, specific to BSV,** of the premise that sublinear chain sync is the scaling lever (§5, building on the BSV header arithmetic of [P3] and the FlyClient evaluation in [L1]). The header dataset is ~4.2 MB/year and does not grow with throughput; the saving sublinear sync offers is therefore bounded by a constant that is already negligible, and it costs a stronger assumption and a header fork.
+2. **MF-SPV, a five-level commitment hierarchy** (§4.1) that requires no consensus change for its core (L0–L3), reusing Teranode's existing subtree→block structure [P5] and nChain's field-level MTxID [P1], with an optional off-header header accumulator (L4) for header-pruned verifiers.
+3. **The frozen-proof property** (§4.2): once a block is sealed, the L0–L3 portion of any inclusion proof for a transaction in it never changes. This is the structural improvement over Utreexo [L3], whose accumulator and proofs mutate every block.
+4. **A push delivery protocol** (§4.3) in which the payer holds and ships the proof bundle, generalising the author's Merchant→Customer→Merchant→Network flow [P3] and Utreexo's owner-maintained proofs [L3], making the per-payment proof network cost zero and refuting the *pull* premise of TxChain [L4] at the level of paradigm.
+5. **A derived scaling model** (§6) with an exact target table the simulator must reproduce, turning every performance claim into a falsifiable prediction rather than an assertion.
+6. **A security analysis** (§7) under the standard minority-hash assumption, with every required condition marked tested / demonstrated / asserted, and the absent-periods limitation stated explicitly (§8).
+
+### 1.4 What this paper does not claim
+
+It reports no benchmarks. It does not claim end-to-end payment latency in a fraction of a second: inclusion-proof verification is sub-millisecond by the model (§6), but end-to-end acceptance latency is bounded by the live double-spend check, which is **orthogonal to MF-SPV** and a property of Teranode and of merchant policy (§4.4, §8). Conflating the two would be the kind of claim that outruns what is shown.
+
+---
+
+## 2. Background
+
+### 2.1 SPV
+
+SPV lets a verifier holding only block headers confirm that a transaction is in a block, via a Merkle path of `log₂ s` hashes for a block of `s` transactions, without storing the chain. It establishes inclusion, not absence of double-spend; the latter requires either confirmations or a view of the spend set.
+
+### 2.2 The author's prior constructions (primary, fully read)
+
+- **Safe Low-Bandwidth SPV [P3].** The transaction flow is reordered to Merchant→Customer→Merchant→Network. The customer (Alice) is offline and holds her input transactions, keys, optional headers, and **the Merkle paths of her transactions**; the merchant (Bob) is online, holds headers, performs the SPV check locally, and broadcasts. The Merkle proof is explicitly a fail-fast against spam and error, **not** double-spend protection; double-spend is handled by UTXO-seen datasets, PoW-attested IPv6-multicast alerts, and a merchant risk parameter τ. No private keys sit at the till.
+- **MTxID [P1].** A Merkle tree whose leaves are the individual *fields* of a transaction (previous-txid, vout, value, scriptSig, sequence, version, input/output counts, locktime, padding; Fig. 6 of [P1]). Its root is a secondary transaction identifier; storing it costs 32 bytes and the tree reconstructs from the fields. The root is committed in the generation transaction ([P1] [0164],[0168]). [P1] also defines an inter-miner root R_M ([0222]–[0223]) to serve trusted identifiers during *absent periods* when some miners do not participate.
+- **Multilevel Merkle file validation [P4].** A file is split into 2^d segments transmitted as depth‖position‖segment and verified per segment against the root, with per-segment retransmission; depth is bounded by a one-byte marker (max 255).
+
+### 2.3 Teranode (integration target, fully read)
+
+Teranode [P5] processes transactions into **subtrees** — batches of TXIDs, up to ~2²⁰ each, carrying full Merkle-path connectivity, broadcast roughly every second and pre-validated. The block Merkle root is built **over subtree roots**, so the production system already maintains a two-level tree (transaction → subtree root → block root). The Asset service exposes `GetTransaction(hash)` and stores subtrees and the UTXO set. The testnet has exceeded 1M TPS; mainnet blocks reach 4 GB. The codebase is Go. MF-SPV is designed to read these structures, not to modify consensus.
+
+---
+
+## 3. Threat model and goals
+
+**Assumptions (each marked; see §7 for which are demonstrated vs inherited):**
+
+- **[A1 — chain validity; INHERITED, standard].** A majority of hash power is honest (BSV minority-hash assumption). This is the standard SPV assumption and is *weaker* than FlyClient's (c,L) assumption [L1], i.e. it yields a stronger guarantee. It is not re-proved here; it is the consensus assumption MF-SPV inherits unchanged.
+- **[A2 — hash security; INHERITED, standard].** SHA-256d is collision- and preimage-resistant. Inclusion soundness reduces to this.
+- **[A3 — header authenticity].** Bob holds, or can obtain, valid block headers (Stage 1). MF-SPV does not weaken Stage 1; for full-header verifiers it is unchanged, and the optional L4 accumulator (§4.1) addresses header-pruned verifiers only.
+
+**Goals.** (G1) inclusion verifiable by Bob locally and in sub-millisecond compute; (G2) per-payment proof network cost zero; (G3) proof size growing logarithmically, not linearly, in block transaction count; (G4) no consensus change for the core; (G5) every limitation stated, none hidden.
+
+**Non-goals.** Double-spend prevention is explicitly out of scope for the proof mechanism (§4.4); it is delegated to the live UTXO check and policy layer. Privacy beyond the field-revelation property of §4.2 is out of scope and flagged as an open dependency (§8).
+
+---
+
+## 4. MF-SPV design
+
+### 4.1 The five-level commitment hierarchy
+
+Each level is a Merkle commitment whose root is the leaf set of the next:
+
+- **L0 — fields → MTxID = TXID.** Per [P1]: the transaction's fields are the leaves; the root is the TXID. A verifier can be shown one field (e.g. an output's value and script) with an `O(log f)` path in `f` fields, **without** the rest of the transaction. This is the property classic SPV lacks and that matters when a BSV transaction is gigabytes.
+- **L1 — TXID → subtree root.** Per Teranode [P5]: TXIDs are grouped into subtrees of ≤2²⁰; the path is ≤20 hashes.
+- **L2 — subtree root → block Merkle root.** Per Teranode [P5]: the block root is built over subtree roots; the path is `⌈log₂(#subtrees)⌉` hashes.
+- **L3 — block Merkle root → 80-byte header.** Standard; PoW-sealed.
+- **L4 — header → header-accumulator root (OPTIONAL).** A Merkle Mountain Range over all prior headers, with its root committed **in the generation transaction** (using [P1]'s mechanism), *not* in the header. This gives a header-pruned verifier the ability to prove any past header from a recent commitment, inheriting PoW security through L3 — **without** the header-format fork FlyClient requires [L1]. It is optional and unused by full-header verifiers.
+
+L0–L3 require **no protocol change**; they are a relabelling and composition of structures already present. L4 is the only part touching commitment placement, and it does so in miner-controlled generation-transaction data, not in the header.
+
+### 4.2 The proof bundle and the frozen-proof property
+
+For each spendable output Alice holds, she stores a **proof bundle**:
+
+```
+{ output_ref,
+  tx_fields            (only the fields to be revealed),
+  L0_mtxid_path        (path for the revealed field — privacy: other fields stay hidden),
+  L1_subtree_path,
+  L2_block_path,
+  L3_header,
+  L4_anchor            (optional) }
+```
+
+**Frozen-proof property (the core improvement).** Once the block containing Alice's transaction is sealed, its L0–L3 structure is immutable: the field set, the TXID, the subtree assignment, the block root, and the header never change. Therefore the L0–L3 portion of Alice's bundle is **valid forever without maintenance**. This is the structural contrast with Utreexo [L3], where the accumulator mutates on every block and owners must update their proofs continually. MF-SPV pushes the maintenance cost to zero for buried transactions because there is nothing to maintain.
+
+**Field-level privacy.** Because L0 is a tree over fields, Alice reveals only the field(s) Bob needs (e.g. the output) and a single path; the remaining fields are not disclosed. FlyClient and classic SPV treat the transaction as an atomic leaf and have no such property [L1].
+
+### 4.3 Push delivery protocol (IP-to-IP)
+
+Generalising [P3] and the owner-maintained model of [L3]:
+
+1. **Bob → Alice:** payment request / template (amount, output script, optional data request per [P2]).
+2. **Alice → Bob (offline-capable):** the signed spending transaction plus, for each input, its proof bundle (§4.2).
+3. **Bob (local):** verifies each bundle **bottom-up, fail-fast** — recompute TXID from revealed fields (L0), climb L1→L2 to the block root, check the root against the held header (L3, or via L4 if header-pruned), verify Alice's signatures. Any mismatch aborts at the first failing hash, in `O(depth)` work and **zero network calls**.
+4. **Bob → Network:** broadcast.
+5. **Double-spend check (orthogonal, §4.4).**
+
+Per-payment proof network cost is **zero**: the proof was pushed by Alice, not pulled by Bob. This is the direct refutation of TxChain's premise [L4] that verifying a transaction requires downloading its block — under the push model the relevant path is already in hand.
+
+### 4.4 Double-spend is orthogonal (stated, not assumed away)
+
+The inclusion proof proves *a transaction was in a block*. It does **not** prove *the output is unspent*. MF-SPV delegates double-spend handling to three independent mechanisms, exactly as [P3] does and **without** overloading the Merkle proof to do work it cannot:
+
+- (a) Bob queries the live UTXO set (Teranode `utxoStore` [P5]);
+- (b) a PoW-attested IPv6-multicast double-spend alert layer [P3];
+- (c) a merchant risk parameter τ governing 0-confirmation acceptance [P3].
+
+End-to-end acceptance latency is set by (a)–(c), not by MF-SPV. We make no claim about it beyond noting the dependency.
+
+---
+
+## 5. Related work and why we diverge
+
+We engage the strongest contrary result in full and decline to delete it.
+
+**FlyClient [L1] — fully read; the principal contrast.** FlyClient is a correct and significant result: it compresses chain synchronisation to `O(log n)` via an in-header MMR and a provably optimal sampling distribution. We do not dispute its mathematics. We dispute its *applicability to BSV*, by arithmetic: FlyClient's evaluated saving is driven by Ethereum's ~508-byte headers and ~15 s blocks; the paper evaluates on Ethereum for exactly this reason [L1]. BSV has 80-byte headers and ~600 s blocks, so the baseline FlyClient improves upon is ~4.2 MB/year and **constant in throughput** (§6, [P3]). Adopting FlyClient would (i) replace the standard minority-hash assumption with the strictly stronger (c,L) assumption — a *weaker* guarantee, by the paper's own statement — and (ii) require a header-format fork. The trade is a stronger assumption plus a consensus change for a saving over a 4.2 MB/year baseline. We decline it on those terms and quantify the decision rather than asserting it. We adopt FlyClient's *idea* of a cross-structure accumulator, but place the commitment off-header (L4, §4.1) using [P1], accepting the absent-periods cost (§8) as the price of not forking.
+
+**Utreexo [L3] — corroborated (PDF robots-blocked).** Utreexo introduces owner-maintained inclusion proofs that travel with spends — the push model we adopt. Its limitation, confirmed across the project's own materials, is that the accumulator mutates each block, so proofs require continual maintenance. MF-SPV improves on this with the frozen-proof property (§4.2): for buried transactions there is no maintenance. We rely on [L3] only for the push-model precedent, which is corroborated; we do not rely on internals of the unread PDF.
+
+**The PoPoW / recursive-SNARK / ZK-light-client family (surveyed in [L2]; representatives [L6], [R5], [R11]).** This family also targets Stage 1, by sublinear or constant-size chain proofs, several requiring trusted setups or imposing heavy prover cost (a property recorded in the survey [L2] and the cross-chain survey [R7]). The Stage-1 argument above applies to the whole family for BSV. The individual papers [L6], [R5], [R11], [R8], [R9], [R10] are cited at the depth stated in `05_REFERENCES.md`; **full-text deep-reads are pending and none is relied upon as evidence here.**
+
+**TxChain [L4] — abstract-level.** TxChain reduces light-client cost by contingent transaction aggregation under a *pull* model. MF-SPV's push model removes the pulled cost at its root. We refute the paradigm, not the paper's internal results, which we have not read in full.
+
+**Vector commitments — KZG [L5], Verkle/VC-updates [R4] — considered and rejected.** Replacing the SHA-256d Merkle tree with a KZG/Verkle vector commitment would shrink an opening from ~1.4 KB to ~48 bytes. We reject it on three demonstrated grounds, not convention: (i) KZG requires a trusted setup, incompatible with BSV's trust model — a definitional property of the scheme, not a claim needing the paper's internals; (ii) prover cost is infeasible at 6×10¹² leaves per 600 s block; (iii) the marginal benefit is ~1.3 KB per proof, which §6 shows is already negligible. SHA-256d Merkle has no setup and reuses the leaf hashing Teranode already performs. (The trusted-setup and prover-cost points are structural; the [L5]/[R4] citations are abstract-level and not load-bearing.)
+
+**Mempool / DoS work — Carbyne [R2], Neonpool [R3] — substantial-depth, context only.** Informs the malformed-bundle DoS surface (§7), not the core design.
+
+---
+
+## 6. Scaling analysis (derived, not assumed)
+
+Parameters (BSV; [P3], [P5]): block interval `t = 600 s`; header `H = 80 B`; blocks/year `≈ 52,560`; subtree capacity `S = 2²⁰`; digest `d = 32 B`.
+
+Derivations: `T(r) = r·t` transactions/block; inclusion path `depth(r) = ⌈log₂ T(r)⌉` (the L1/L2 subtree split adds no hashes, since `log₂ T = log₂ S + log₂(#subtrees)`); core proof size `= d·depth(r)`; header dataset `= H × 52,560 ≈ 4.2 MB/year`, independent of `r`.
+
+| r (tx/s) | T = r·600 | depth = ⌈log₂T⌉ | proof = 32·depth (B) | subtrees = ⌈T/2²⁰⌉ |
+|---|---|---|---|---|
+| 10⁶  | 6.00×10⁸  | 30 | 960  | 573 |
+| 10⁷  | 6.00×10⁹  | 33 | 1056 | 5,723 |
+| 10⁸  | 6.00×10¹⁰ | 36 | 1152 | 57,221 |
+| 10⁹  | 6.00×10¹¹ | 40 | 1280 | 572,205 |
+| 10¹⁰ | 6.00×10¹² | 43 | 1376 | 5,722,046 |
+| **10¹¹** | **6.00×10¹³** | **46** | **1472** | **57,220,459** |
+| 10¹² | 6.00×10¹⁴ | 50 | 1600 | 572,204,590 |
+
+**Derived results (each a falsifiable prediction the simulator must reproduce; `04_TEST_PLAN.md` T7):**
+
+- **R1.** From 10⁶ to 10¹⁰ tx/s the inclusion proof grows by **13 hashes = 416 bytes** (960 → 1376 B). Logarithmic.
+- **R2.** The header dataset is **constant at ~4.2 MB/year** for every `r`. This is the quantity FlyClient-style Stage-1 compression competes to reduce; it does not scale with `r`, so the competition is over a fixed, already-small constant.
+- **R3.** Inclusion-verification compute is `≤ depth` hash compressions (≤43) plus signature checks plus one header lookup — sub-millisecond on commodity hardware; the simulator must show it growing with `log₂ T`, with the linear-in-`T` hypothesis rejected by regression.
+- **R4.** Per-payment proof network cost is **0** under the push model; the simulator emits, for contrast, the bytes a pull-model verifier would fetch (the legacy SPV / [L4] regime).
+
+These four numbers are the empirical core to be validated. They are arithmetic from stated BSV parameters; if a benchmark contradicts them, the implementation is wrong, not the model.
+
+---
+
+## 7. Security analysis
+
+We trace each security property to the conditions it requires and classify each condition.
+
+- **Inclusion soundness.** A forged bundle requires a SHA-256d collision somewhere on the L0→L3 path. **Condition:** [A2]. **Status: reduces to a standard, demonstrated assumption.** Test: `04_TEST_PLAN.md` A1 — any collision-free forgery must be **rejected**.
+- **Chain soundness.** Accepting a block not on the most-work chain requires defeating PoW. **Condition:** [A1]. **Status: inherited, standard; weaker than (c,L) [L1], hence stronger guarantee.** Test: A2 — an alternative header chain without majority work must not anchor.
+- **Inclusion ≠ double-spend.** The proof does not assert unspentness; this is a *property*, not a vulnerability, and is handled by §4.4. **Status: stated.** Test: A2/T3.5 — a valid inclusion proof for a double-spent output must still be rejected by the live check, never accepted on the proof alone.
+- **Spam / DoS resistance.** Malformed bundles fail at the first bad hash, `O(depth)`, no network call (§4.3). **Status: demonstrated by construction; to be load-tested** (context from [R2], [R3]). Test: A3.
+- **Alert integrity (double-spend layer).** Alerts are PoW-attested [P3]; unattested alerts are dropped. **Status: design-level; to be tested.** Test: A4 — alert flooding without evidence must be dropped.
+- **Reorg / re-anchoring.** A bundle anchored to an orphaned block must be detected and re-anchored. **Status: OPEN — not fully specified; see §8.** Test: A5 — `NeedsReanchor` true and `Verify` false until re-anchored.
+- **Field-level privacy.** Revealing one field discloses only that field and its path (§4.2). **Status: demonstrated by construction;** unlinkability beyond this is **OPEN** (§8).
+
+**No causal or security claim here rests on an `[ABSTRACT]`-level reference.** [A1] and [A2] are the standard consensus and hash assumptions; everything else is either demonstrated by construction or marked open and assigned a falsifying test.
+
+---
+
+## 8. Limitations (stated, not hidden)
+
+1. **Absent periods (inherited from off-header commitment).** The optional L4 accumulator is committed in the generation transaction, so it binds only blocks of participating miners; non-participating miners leave gaps — exactly the absent-periods problem [P1] raises and patches with the inter-miner root R_M ([0222]–[0223]). FlyClient's in-header MMR has no such gap because every honest miner maintains it [L1]. This is the price of not forking the header, and it is a real cost. **It affects only header-pruned verifiers using L4; full-header verifiers are unaffected because they do not use L4.** The companion specs require gap-honesty: the accumulator must report its coverage gaps rather than paper over them (`02_MODULE_SPECS.md` `CoverageGaps`; `04_TEST_PLAN.md` T2.3).
+2. **Privacy.** MF-SPV provides field-level non-disclosure (§4.2) but no unlinkability guarantee. Treated as an open dependency, not claimed.
+3. **Reorg re-anchoring.** Detection and re-anchoring of bundles whose block is orphaned is specified at the interface level (`Reanchor`) but the policy is not fully worked out. Open.
+4. **Double-spend latency.** Out of scope for the proof; end-to-end latency depends on the orthogonal layer (§4.4). Not claimed.
+5. **Evidence dependency on blocked PDFs.** `eprint.iacr.org` PDFs were robots-blocked; FlyClient [L1] and SoK [L2] were read in full via alternate routes, but Utreexo [L3] and all other ePrint items were not. The related-work claims drawn from `[ABSTRACT]`-level items are positioning, not evidence; before journal submission their full texts must be obtained and re-read (`05_REFERENCES.md`, honest dependency).
+6. **No implementation results.** This is a design paper. Performance claims are derived predictions (§6) awaiting the simulation specified in `04_TEST_PLAN.md`.
+
+---
+
+## 9. Conclusion
+
+For BSV at scale, the scaling lever is not where the light-client literature has put it. Sublinear chain synchronisation optimises a dataset that, at 80-byte headers and 10-minute blocks, is ~4.2 MB/year and does not grow with throughput, and it costs a stronger assumption and a header fork. MF-SPV optimises the inclusion stage and the delivery model instead: a five-level Merkle hierarchy that is already present in Teranode and needs no consensus change for its core, field-level proofs from [P1], sender-pushed bundles whose historical portion is frozen at block-sealing time, and double-spend handling kept orthogonal to the proof. The derived model predicts inclusion proofs growing by 416 bytes across four orders of magnitude of throughput, with per-payment proof network cost zero. Those predictions are falsifiable and specified for test. The limitations — absent periods under the optional off-header accumulator, privacy, reorg re-anchoring, and the outstanding full-text reads — are stated here rather than discovered later.
+
+---
+
+## Appendix A — Build artifacts
+
+Design and build are specified in the companion files for separate execution (Claude Code), not in this manuscript: `01_ARCHITECTURE.md` (full architecture, namespace `mfspv`, build order), `02_MODULE_SPECS.md` (Go interfaces, invariants, conditions), `03_SCALING_MODEL.md` (the simulator's exact target table), `04_TEST_PLAN.md` (T1–T7 functional and A1–A5 adversarial tests; every security test asserts that forgeries are **rejected**).
+
+## Appendix B — Optional encrypted-delivery path
+
+Where Bob's request carries a data payload, the request/response and ECDH-derived side-secret mechanism of [P2] (US 11,893,074) composes with the payment in step 2 of §4.3. It is optional and outside the core verification path.
+
+## Appendix C — Reference depths
+
+All sources, their verified URLs, read-depths, and tier scores are in `05_REFERENCES.md`. Load-bearing sources: [P1]–[P5] (full primary), [L1] (full), [L2] (full), [L3] (corroborated push-model precedent only). All other references are positioning at the depth stated and are not relied upon as evidence.
