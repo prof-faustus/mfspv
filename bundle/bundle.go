@@ -40,6 +40,11 @@ type AnchorProof struct {
 	GenTxFields             TxFields
 	GenL0, GenL1, GenL2     []PathElem
 	CarryingBlockMerkleRoot Hash
+	// CarryingHeader is the FULL 80-byte header of the carrying block. The verifier
+	// MUST confirm this header is on its (pruned) most-work chain and that its
+	// committed Merkle root equals CarryingBlockMerkleRoot — otherwise accRoot does
+	// not inherit PoW and an attacker could supply any CarryingBlockMerkleRoot. (RT-1)
+	CarryingHeader [80]byte
 }
 
 // Bundle is the self-contained inclusion proof for one output.
@@ -135,16 +140,34 @@ func Verify(b Bundle, headersView teranode.HeaderChain) (ok bool, depth int, rea
 		return true, depth, ""
 	}
 	// 5b. else fall back to the L4 anchor (header-pruned verifier).
-	if b.Anchor != nil {
+	if b.Anchor != nil && headersView != nil && anchorBindsToChain(b.Anchor, headersView) {
 		a := b.Anchor
-		anchored := accumulator.VerifyAnchor(a.AccRoot, a.GenTxFields, a.GenL0, a.GenL1, a.GenL2, a.CarryingBlockMerkleRoot)
+		// I-A2: VerifyBlockInChain is trusted ONLY when accRoot is PoW-anchored AND
+		// the carrying block is itself on the verifier's most-work chain (RT-1).
 		inChain := accumulator.VerifyBlockInChain(b.Header, a.AccPath, a.AccRoot)
-		// I-A2: VerifyBlockInChain is trusted ONLY when the accRoot is PoW-anchored.
-		if anchored && inChain {
+		if inChain {
 			return true, depth, ""
 		}
 	}
 	return false, depth, "L3/L4-chain"
+}
+
+// anchorBindsToChain reports whether an L4 anchor is genuinely PoW-bound: the
+// accRoot is committed in the carrying block's gen tx (VerifyAnchor) AND the
+// carrying block's header is on the verifier's most-work chain with the matching
+// Merkle root. Without the header check, CarryingBlockMerkleRoot is attacker-chosen
+// and the accumulator inherits no PoW (RT-1).
+func anchorBindsToChain(a *AnchorProof, headersView teranode.HeaderChain) bool {
+	if headersView == nil {
+		return false
+	}
+	if !headersView.Contains(a.CarryingHeader) {
+		return false
+	}
+	if HeaderMerkleRoot(a.CarryingHeader) != a.CarryingBlockMerkleRoot {
+		return false
+	}
+	return accumulator.VerifyAnchor(a.AccRoot, a.GenTxFields, a.GenL0, a.GenL1, a.GenL2, a.CarryingBlockMerkleRoot)
 }
 
 // Errors.
@@ -170,13 +193,10 @@ func NeedsReanchor(b Bundle, headersView teranode.HeaderChain) bool {
 	if headersView.Contains(b.Header) {
 		return false
 	}
-	// If a valid L4 anchor still binds the header, no reanchor is needed.
-	if b.Anchor != nil {
-		a := b.Anchor
-		if accumulator.VerifyAnchor(a.AccRoot, a.GenTxFields, a.GenL0, a.GenL1, a.GenL2, a.CarryingBlockMerkleRoot) &&
-			accumulator.VerifyBlockInChain(b.Header, a.AccPath, a.AccRoot) {
-			return false
-		}
+	// If a valid, PoW-bound L4 anchor still binds the header, no reanchor is needed.
+	if b.Anchor != nil && anchorBindsToChain(b.Anchor, headersView) &&
+		accumulator.VerifyBlockInChain(b.Header, b.Anchor.AccPath, b.Anchor.AccRoot) {
+		return false
 	}
 	return true
 }

@@ -386,9 +386,32 @@ func (n *MockNode) BlockRoot(blockHash Hash) (Hash, bool) {
 	return sb.blockRoot, true
 }
 
-// Compile-time guarantees that MockNode satisfies the read-only interfaces.
+// StaticHeaderChain is a HeaderChain over an explicit set of headers — the model
+// of a header-PRUNED verifier that retains only a recent window of headers (e.g.
+// the carrying block used by an L4 anchor) rather than the whole chain.
+type StaticHeaderChain struct {
+	headers map[Hash]bool
+	tip     uint64
+}
+
+// NewStaticHeaderChain builds a pruned view from a set of headers it trusts.
+func NewStaticHeaderChain(headers [][80]byte, tip uint64) *StaticHeaderChain {
+	m := map[Hash]bool{}
+	for _, h := range headers {
+		m[commitment.DoubleSHA256(h[:])] = true
+	}
+	return &StaticHeaderChain{headers: m, tip: tip}
+}
+
+func (s *StaticHeaderChain) Contains(h [80]byte) bool {
+	return s.headers[commitment.DoubleSHA256(h[:])]
+}
+func (s *StaticHeaderChain) BestTipHeight() uint64 { return s.tip }
+
+// Compile-time guarantees that the types satisfy the read-only interfaces.
 var (
 	_ ProofSource = (*MockNode)(nil)
 	_ HeaderChain = (*MockNode)(nil)
 	_ UTXOClient  = (*MockNode)(nil)
+	_ HeaderChain = (*StaticHeaderChain)(nil)
 )

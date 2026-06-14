@@ -90,6 +90,11 @@ func (t *Tx3) VerifyInputSignature(inputIdx int) bool {
 	if err != nil {
 		return false
 	}
+	// Reject non-canonical (high-S) signatures: they are malleable (n-S verifies
+	// too), which would let a third party alter the broadcast tx's id. (RT-3)
+	if !sig.IsLowS() {
+		return false
+	}
 	h := t.Sighash(inputIdx)
 	return crypto.Verify(pub, h[:], sig)
 }

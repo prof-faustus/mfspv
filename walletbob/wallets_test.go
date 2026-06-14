@@ -188,11 +188,15 @@ func TestTauAndAlertBehaviour(t *testing.T) {
 	s3 := newScenario(t)
 	msg3, template3 := s3.pay(t)
 	op := dsalert.Outpoint{TXID: s3.fund.OutputRef.TXID, Vout: 0}
-	alert := dsalert.Attest(op, dsalert.ConflictEvidence{
-		SpendA: commitment.DoubleSHA256([]byte("honest-spend")),
-		SpendB: commitment.DoubleSHA256([]byte("double-spend")),
-	})
-	if !s3.bus.Publish(alert) {
+	dsSeed := sha256.Sum256([]byte("double-spender"))
+	dsKey, _ := crypto.NewPrivateKey(dsSeed[:])
+	ev, err := dsalert.BuildEvidence(dsKey, op,
+		commitment.DoubleSHA256([]byte("honest-spend")),
+		commitment.DoubleSHA256([]byte("double-spend")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s3.bus.Publish(dsalert.Attest(op, ev)) {
 		t.Fatal("genuine alert not accepted by bus")
 	}
 	d3, _ := s3.bobW.AcceptPayment(msg3, template3, 900, RiskPolicy{Tau: 5000, Window: time.Minute})

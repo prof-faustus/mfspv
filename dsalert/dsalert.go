@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"mfspv/commitment"
+	"mfspv/crypto"
 )
 
 type Hash = commitment.Hash
@@ -28,12 +29,40 @@ type Outpoint struct {
 	Vout uint32
 }
 
-// ConflictEvidence is two DISTINCT transactions that both spend the same outpoint.
-// Verifiable on its face: a real double-spend exhibits two different spending txids
-// for one outpoint.
+// ConflictEvidence proves a genuine double-spend: the holder of OwnerPubKey
+// authorised TWO DIFFERENT spends (SpendA != SpendB) of the SAME outpoint, by
+// signing each. This is UNFORGEABLE without the owner's private key — closing the
+// flood/censorship vector where anyone could assert a "conflict" from two random
+// hashes (RT-2). The signed message for each spend is H(outpoint ‖ spendTxID).
 type ConflictEvidence struct {
-	SpendA Hash // txid of the first spend
-	SpendB Hash // txid of the conflicting spend
+	OwnerPubKey []byte // 33-byte compressed key that authorised both spends
+	SpendA      Hash   // txid of the first spend
+	SigA        []byte // owner's signature over H(outpoint ‖ SpendA)
+	SpendB      Hash   // txid of the conflicting spend
+	SigB        []byte // owner's signature over H(outpoint ‖ SpendB)
+}
+
+// spendMessage is the digest the owner signs to authorise spending `outpoint` in
+// the transaction `spendTx`.
+func spendMessage(out Outpoint, spendTx Hash) Hash {
+	buf := make([]byte, 0, 32+4+32)
+	buf = append(buf, out.TXID[:]...)
+	var v [4]byte
+	binary.LittleEndian.PutUint32(v[:], out.Vout)
+	buf = append(buf, v[:]...)
+	buf = append(buf, spendTx[:]...)
+	return commitment.DoubleSHA256(buf)
+}
+
+// SignSpend produces the owner's authorisation of spending `out` in `spendTx`.
+// (Used to assemble genuine conflict evidence.)
+func SignSpend(key *crypto.PrivateKey, out Outpoint, spendTx Hash) ([]byte, error) {
+	msg := spendMessage(out, spendTx)
+	sig, err := key.Sign(msg[:])
+	if err != nil {
+		return nil, err
+	}
+	return sig.Serialize(), nil
 }
 
 // Alert is a double-spend notification.
@@ -48,17 +77,20 @@ type Alert struct {
 // sets it to a value tied to recent block difficulty (prior-PoW attestation, §3.2b).
 const PoWBits = 12
 
-// alertDigest binds outpoint + evidence + nonce into a single hash.
+// alertDigest binds outpoint + full evidence + nonce into a single hash.
 func alertDigest(a Alert) Hash {
-	buf := make([]byte, 0, 32+4+32+32+len(a.AttesterPoW))
-	buf = append(buf, a.Outpoint.TXID[:]...)
+	var b []byte
+	b = append(b, a.Outpoint.TXID[:]...)
 	var v [4]byte
 	binary.LittleEndian.PutUint32(v[:], a.Outpoint.Vout)
-	buf = append(buf, v[:]...)
-	buf = append(buf, a.Evidence.SpendA[:]...)
-	buf = append(buf, a.Evidence.SpendB[:]...)
-	buf = append(buf, a.AttesterPoW...)
-	return commitment.DoubleSHA256(buf)
+	b = append(b, v[:]...)
+	b = append(b, a.Evidence.OwnerPubKey...)
+	b = append(b, a.Evidence.SpendA[:]...)
+	b = append(b, a.Evidence.SigA...)
+	b = append(b, a.Evidence.SpendB[:]...)
+	b = append(b, a.Evidence.SigB...)
+	b = append(b, a.AttesterPoW...)
+	return commitment.DoubleSHA256(b)
 }
 
 func leadingZeroBits(h Hash) int {
@@ -79,8 +111,27 @@ func leadingZeroBits(h Hash) int {
 	return n
 }
 
-// Attest finds a nonce so the alert meets PoWBits (prior-work attestation). It
-// returns the completed alert. Used by an honest attester observing a conflict.
+// BuildEvidence assembles genuine, owner-signed double-spend evidence. It requires
+// the owner's private key (i.e. only a party that can actually authorise the spends
+// — the double-spender, or someone who observed both signed spends — can produce it).
+func BuildEvidence(key *crypto.PrivateKey, out Outpoint, spendA, spendB Hash) (ConflictEvidence, error) {
+	sigA, err := SignSpend(key, out, spendA)
+	if err != nil {
+		return ConflictEvidence{}, err
+	}
+	sigB, err := SignSpend(key, out, spendB)
+	if err != nil {
+		return ConflictEvidence{}, err
+	}
+	return ConflictEvidence{
+		OwnerPubKey: key.Public().SerializeCompressed(),
+		SpendA:      spendA, SigA: sigA,
+		SpendB: spendB, SigB: sigB,
+	}, nil
+}
+
+// Attest finds a nonce so the alert meets PoWBits (prior-work attestation) and
+// returns the completed alert. Used by an honest attester relaying a conflict.
 func Attest(out Outpoint, ev ConflictEvidence) Alert {
 	a := Alert{Outpoint: out, Evidence: ev}
 	var nonce uint64
@@ -96,16 +147,37 @@ func Attest(out Outpoint, ev ConflictEvidence) Alert {
 }
 
 // VerifyAlert reports whether an alert is admissible (I-DS1). It requires:
-//   - genuine conflict evidence: two DISTINCT spends of the SAME outpoint;
+//   - two DISTINCT spends of the SAME outpoint;
+//   - BOTH spends signed by the SAME owner key, with canonical (low-S) signatures
+//     — i.e. cryptographic proof the key holder authorised a double-spend (RT-2);
 //   - a valid prior-work attestation meeting PoWBits.
 //
-// An alert failing either is dropped.
+// An alert failing any check is dropped. Forging it requires the owner's private
+// key, so it cannot be fabricated to flood/censor.
 func VerifyAlert(a Alert) (ok bool) {
-	if a.Evidence.SpendA == a.Evidence.SpendB {
+	ev := a.Evidence
+	if ev.SpendA == ev.SpendB {
 		return false // not a conflict: same transaction
 	}
-	if a.Evidence.SpendA == (Hash{}) || a.Evidence.SpendB == (Hash{}) {
+	if ev.SpendA == (Hash{}) || ev.SpendB == (Hash{}) {
 		return false // empty evidence
+	}
+	pub, err := crypto.ParseCompressed(ev.OwnerPubKey)
+	if err != nil {
+		return false // no/invalid owner key
+	}
+	sigA, err := crypto.ParseSignature(ev.SigA)
+	if err != nil || !sigA.IsLowS() {
+		return false
+	}
+	sigB, err := crypto.ParseSignature(ev.SigB)
+	if err != nil || !sigB.IsLowS() {
+		return false
+	}
+	mA := spendMessage(a.Outpoint, ev.SpendA)
+	mB := spendMessage(a.Outpoint, ev.SpendB)
+	if !crypto.Verify(pub, mA[:], sigA) || !crypto.Verify(pub, mB[:], sigB) {
+		return false // signatures do not prove the owner authorised both spends
 	}
 	if leadingZeroBits(alertDigest(a)) < PoWBits {
 		return false // unattested -> dropped (anti-flood)

@@ -44,6 +44,7 @@ func Serialize(b Bundle) ([]byte, error) {
 		w.path(a.GenL1)
 		w.path(a.GenL2)
 		w.bytes(a.CarryingBlockMerkleRoot[:])
+		w.bytes(a.CarryingHeader[:])
 	}
 	return w.buf, nil
 }
@@ -74,6 +75,9 @@ func Deserialize(data []byte) (Bundle, error) {
 		a.GenL1 = r.path()
 		a.GenL2 = r.path()
 		if err := r.read(a.CarryingBlockMerkleRoot[:]); err != nil {
+			return Bundle{}, err
+		}
+		if err := r.read(a.CarryingHeader[:]); err != nil {
 			return Bundle{}, err
 		}
 		b.Anchor = a

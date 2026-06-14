@@ -369,6 +369,16 @@ func Verify(pub *PublicKey, hash []byte, sig *Signature) bool {
 	return x.Cmp(sig.R) == 0
 }
 
+// IsLowS reports whether S is in the lower half of the curve order (S <= n/2).
+// Non-low-S signatures are malleable (n-S is also valid); canonical verifiers
+// reject them to prevent transaction-ID malleability.
+func (s *Signature) IsLowS() bool {
+	if s == nil || s.S == nil {
+		return false
+	}
+	return s.S.Cmp(nHalf) <= 0
+}
+
 // Serialize returns the 64-byte (R‖S) form.
 func (s *Signature) Serialize() []byte {
 	out := make([]byte, 64)
@@ -377,6 +387,19 @@ func (s *Signature) Serialize() []byte {
 	copy(out[32-len(rb):32], rb)
 	copy(out[64-len(sb):], sb)
 	return out
+}
+
+// Malleate returns the other valid form of a signature, (R, n-S). It is the
+// canonical malleability transform: the result verifies identically under raw
+// ECDSA but has the opposite low-S parity. Exposed so callers can test that they
+// reject non-canonical signatures.
+func Malleate(sig64 []byte) ([]byte, error) {
+	s, err := ParseSignature(sig64)
+	if err != nil {
+		return nil, err
+	}
+	ns := new(big.Int).Sub(curveN, s.S)
+	return (&Signature{R: s.R, S: ns}).Serialize(), nil
 }
 
 // ParseSignature parses a 64-byte (R‖S) signature.

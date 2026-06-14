@@ -6,12 +6,14 @@
 package adversarial
 
 import (
+	"crypto/sha256"
 	"testing"
 	"time"
 
 	"mfspv/accumulator"
 	"mfspv/bundle"
 	"mfspv/commitment"
+	"mfspv/crypto"
 	"mfspv/dsalert"
 	"mfspv/teranode"
 )
@@ -128,15 +130,18 @@ func TestA3_SpamRejectedFailFast(t *testing.T) {
 func TestA4_AlertFloodDropped(t *testing.T) {
 	bus := dsalert.NewBus()
 	out := dsalert.Outpoint{TXID: commitment.DoubleSHA256([]byte("op")), Vout: 0}
+	victimSeed := sha256.Sum256([]byte("victim-pubkey"))
+	victim, _ := crypto.NewPrivateKey(victimSeed[:])
 	for i := 0; i < 500; i++ {
-		// "conflict" with identical txids is not a conflict; also unattested.
-		junk := dsalert.Alert{
-			Outpoint:    out,
-			Evidence:    dsalert.ConflictEvidence{SpendA: commitment.DoubleSHA256([]byte("z")), SpendB: commitment.DoubleSHA256([]byte("z"))},
-			AttesterPoW: []byte{byte(i)},
-		}
+		// Attacker fabricates a "conflict" against the victim's key with DISTINCT
+		// spend hashes but no valid owner signatures. Must be dropped (RT-2).
+		junk := dsalert.Attest(out, dsalert.ConflictEvidence{
+			OwnerPubKey: victim.Public().SerializeCompressed(),
+			SpendA:      commitment.DoubleSHA256([]byte{byte(i), 'a'}), SigA: make([]byte, 64),
+			SpendB: commitment.DoubleSHA256([]byte{byte(i), 'b'}), SigB: make([]byte, 64),
+		})
 		if bus.Publish(junk) {
-			t.Fatal("evidence-free alert accepted")
+			t.Fatal("fabricated alert accepted (flood/censorship vector open)")
 		}
 	}
 	if !bus.QuietFor([]dsalert.Outpoint{out}, time.Hour) {

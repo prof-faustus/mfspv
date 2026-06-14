@@ -207,6 +207,7 @@ func TestSerializeRoundTrip(t *testing.T) {
 		GenL1:                   nil,
 		GenL2:                   []PathElem{{Sibling: commitment.DoubleSHA256([]byte("g2")), Right: true}},
 		CarryingBlockMerkleRoot: commitment.DoubleSHA256([]byte("cb")),
+		CarryingHeader:          [80]byte{1, 2, 3, 250, 251, 252},
 	}
 	data2, _ := Serialize(b)
 	got2, err := Deserialize(data2)
@@ -251,6 +252,7 @@ func TestL4PrunedVerifier(t *testing.T) {
 		t.Fatal(err)
 	}
 	carryRoot, _ := n.BlockRoot(carrier)
+	carryHdr, _ := n.HeaderFor(carrier)
 	accPath, _, err := n.ProveHeaderInAccumulator(targetHash, carrier)
 	if err != nil {
 		t.Fatal(err)
@@ -263,9 +265,15 @@ func TestL4PrunedVerifier(t *testing.T) {
 		GenL1:                   l1,
 		GenL2:                   l2,
 		CarryingBlockMerkleRoot: carryRoot,
+		CarryingHeader:          carryHdr,
 	}
-	// A pruned verifier that does NOT contain the header still accepts via L4.
-	pruned := teranode.NewMockNode(4) // empty chain view
+	// A header-PRUNED verifier holds only the recent carrying header (NOT the old
+	// target header) yet still accepts via the L4 anchor.
+	pruned := teranode.NewStaticHeaderChain([][80]byte{carryHdr}, 100)
+	targetHdr, _ := n.HeaderFor(targetHash)
+	if pruned.Contains(targetHdr) {
+		t.Fatal("pruned verifier should NOT hold the target header")
+	}
 	if ok, _, reason := Verify(b, pruned); !ok {
 		t.Fatalf("L4 pruned verification failed: %q", reason)
 	}
@@ -276,6 +284,12 @@ func TestL4PrunedVerifier(t *testing.T) {
 	bad.Anchor = &badAnchor
 	if ok, _, _ := Verify(bad, pruned); ok {
 		t.Fatal("tampered anchor accepted")
+	}
+	// RT-1: an anchor whose carrying header is NOT on the verifier's chain must be
+	// rejected even if its internal algebra is self-consistent (PoW-bypass attempt).
+	noCarrier := teranode.NewStaticHeaderChain(nil, 100)
+	if ok, _, _ := Verify(b, noCarrier); ok {
+		t.Fatal("RT-1: anchor accepted without a trusted carrying header (PoW bypass)")
 	}
 }
 
@@ -319,6 +333,9 @@ func bundleEqual(a, b Bundle) bool {
 	}
 	if a.Anchor != nil {
 		if a.Anchor.AccRoot != b.Anchor.AccRoot || a.Anchor.CarryingBlockMerkleRoot != b.Anchor.CarryingBlockMerkleRoot {
+			return false
+		}
+		if a.Anchor.CarryingHeader != b.Anchor.CarryingHeader {
 			return false
 		}
 		if !pathEqual(a.Anchor.AccPath, b.Anchor.AccPath) {
