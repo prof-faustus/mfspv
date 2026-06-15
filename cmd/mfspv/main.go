@@ -22,6 +22,7 @@ import (
 	"mfspv/commitment"
 	"mfspv/crypto"
 	"mfspv/dsalert"
+	"mfspv/fabric"
 	"mfspv/payment"
 	"mfspv/teranode"
 	"mfspv/walletalice"
@@ -30,9 +31,14 @@ import (
 
 func main() {
 	eval := flag.Bool("eval", false, "emit environment.json + claims.csv and tagged M/D/S results (06_EVALUATION_DESIGN.md §8)")
+	fab := flag.Bool("fabric", false, "run the 07_VERIFICATION_FABRIC.md throughput benchmark (A>=1.5)")
 	flag.Parse()
 	if *eval {
 		reproduce()
+		return
+	}
+	if *fab {
+		fabric.RunReport(os.Stdout)
 		return
 	}
 	fmt.Println("Merkle-Forest SPV (MF-SPV) — BSV/Teranode. Demonstration runner.")
@@ -129,6 +135,8 @@ func claimsCSV() string {
 		{"S10", "no private keys at till", "M", "walletbob.TestT4_3_NoKeysAtTill"},
 		{"VAL", "value conservation: inputs>=outputs", "M", "walletbob.TestValueConservation"},
 		{"MUT", "security-critical mutants killed (>=0.85)", "M", "cmd/mutate (go run ./cmd/mutate)"},
+		{"R6", "verifier throughput: dense batch A>=1.5 (07)", "M", "fabric.TestFabricBar (go run ./cmd/mfspv -fabric)"},
+		{"LEAF", "inclusion leaf = consensus TXID (07 §5)", "M", "fabric.TestLeafIsConsensusTXID"},
 		{"KAT", "sha256d/2G/RFC6979 known-answer", "M", "crypto.TestKAT_TwoG;TestKAT_RFC6979Nonce;commitment.TestKAT_DoubleSHA256"},
 		{"DIFF", "merkle vs independent oracle (incl odd)", "M", "commitment.TestDifferentialMerkle"},
 	}

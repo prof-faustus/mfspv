@@ -20,7 +20,7 @@ keywords:
   - Merkle proof
   - light client
   - blockchain scaling
-license: "SEE-LICENSE-FILE"   # author to set (e.g. MIT/Apache-2.0/BSV); not imposed here.
+license: "LicenseRef-Open-BSV-4"   # Open BSV License version 4; see the LICENSE file (authoritative).
 repository-code: "https://example.invalid/mfspv"   # set to the published repo / Zenodo DOI
 version: "0.1.0"
 date-released: "2026-06-15"

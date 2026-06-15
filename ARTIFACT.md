@@ -79,5 +79,6 @@ See `SECURITY.md` for the adversarial audit (RT-1…RT-7) and confirmed-safe sur
 
 ## License
 
-Set by the author before archival (`CITATION.cff` `license:` and a `LICENSE` file).
-Not imposed by this artifact.
+Open BSV License version 4 — see `LICENSE`. The Software may only be used on the
+BSV blockchains (block height #556767, hash `…802b1662b`), consistent with the
+BSV-only scope of this artifact.
