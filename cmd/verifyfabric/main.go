@@ -77,6 +77,19 @@ func main() {
 		fmt.Printf("  proofs=%-8d verif/s=%.3e  A=%.2f  %s\n", np, v, v/bench.VerifBar, res)
 	}
 
+	// --- Lever A: REAL 16-lane AVX-512 multi-buffer fold (vendored minio kernel),
+	//     per-proof model — folds 16 proofs in lockstep on SIMD. ---
+	fmt.Printf("\n## Lever A — 16-lane AVX-512 multi-buffer fold (per-proof model), AVX512=%v\n", bench.Avx512Available())
+	for _, depth := range []int{43, 46} {
+		proofs := bench.BuildBatch(depth, 8192, 8)
+		v := bench.FabricThroughput16(proofs, *workers, *dur)
+		res := "FAIL"
+		if v >= bench.VerifBar {
+			res = "PASS"
+		}
+		fmt.Printf("  depth=%-2d avx512-x16  verif/s=%.3e  A=%.2f  %s\n", depth, v, v/bench.VerifBar, res)
+	}
+
 	// --- Shares-nothing scale-out (Lever C): the fabric aggregate = per-server x N. ---
 	bestPerServer := 9.0e6 // conservative per-64-core-server sparse rate from the table above
 	servers := int(math.Ceil(bench.VerifBar / bestPerServer))

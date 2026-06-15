@@ -1,0 +1,25 @@
+MF-SPV — third-party attributions
+=================================
+
+This project is licensed under the Open BSV License version 4 (see LICENSE).
+
+It includes the following third-party components:
+
+1. AVX-512 16-lane SHA-256 kernel (internal/sha256mb/sha256x16_amd64.s and the
+   round-constant table and blockAvx512/getDigest helpers in
+   internal/sha256mb/sha256x16_amd64.go) are VENDORED VERBATIM from:
+
+       github.com/minio/sha256-simd  (v1.0.1)
+       Copyright (c) 2016-2022 Minio Inc.
+       Licensed under the Apache License, Version 2.0.
+
+   A copy of the Apache-2.0 license is available at:
+       https://www.apache.org/licenses/LICENSE-2.0
+
+   The wrapper that drives the kernel synchronously for batched Merkle folding
+   (Hasher, DoubleSHA256x16, initialState) is original to this project.
+
+2. Go module dependencies (see go.mod), used as libraries:
+       github.com/minio/sha256-simd        (Apache-2.0)
+       github.com/klauspost/cpuid/v2        (MIT)
+       golang.org/x/sys                     (BSD-3-Clause)
