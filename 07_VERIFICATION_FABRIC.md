@@ -225,6 +225,21 @@ path, Bob verifies LOCALLY (path **and** signature, unspent, value, alert-quiet)
 Bob **push the Tx to 2–3 nodes** which re-validate and accept; a tampered Tx is rejected — is tested in
 `walletbob.TestE2E_SPV_PushToNodes`.
 
+**Server-scale measured summary (`go run ./cmd/verifyfabric`, 64-core Xeon Gold 6430):**
+- *Sparse per-proof model* (each proof folded independently, L1 non-amortised): **A ≈ 0.27–0.68**
+  per server (software and minio SHA-NI single-buffer) → does **not** clear the bar on one box; the
+  shared internal subtree nodes are recomputed per proof. Single-buffer hardware SHA does not fix it.
+- *Complete batched multiproof pipeline* (decode+verify, shared block/subtree/internal nodes computed
+  once — Lever B at full strength), **depth 46 (10¹¹ tx/s): A ≈ 4.5 on ONE server (PASS)**, 1M real
+  proofs; depth-independent (holds at 10× depth).
+- *Shares-nothing scale-out* (Lever C): aggregate = per-server × N; the sparse worst case reaches the
+  bar with **2 servers**, with no upper limit. This is the correct deployment unit for 100-billion-tx/s
+  verification — a horizontal fabric, not a single box.
+- *Lever A backends*: software (Go SHA-NI) and the audited `minio/sha256-simd` (KAT byte-identical) are
+  wired; a true 16-lane AVX-512 **multi-buffer Merkle kernel** would lift the sparse single-box case,
+  but minio's general hash.Hash multi-buffer API is for large streams and does not accelerate the
+  tiny-message Merkle fold (measured, not assumed).
+
 **Complete signed-SPV accounting (honest).** Each payment needs path-verify **plus one ECDSA
 signature verify**. The path is not the ceiling; the **signature** is. The in-repo reference secp256k1
 verify is unoptimised (~10⁴ verify/s aggregate); production uses the node's audited libsecp256k1
