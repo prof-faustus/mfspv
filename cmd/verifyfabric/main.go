@@ -110,13 +110,17 @@ func main() {
 		}
 	}
 
-	// --- Single-box CEILING + fabric scale-out to 1e10 / 1e11 verif/s. ---
-	ceil := bench.PeakVerifyCeiling(*workers, *dur)
-	fmt.Printf("\n## Single-box verify CEILING (AVX-512 hash-bound) and fabric scale-out\n")
-	fmt.Printf("  one %d-core box: <= %.3e verif/s (whole-block multiproof ~1 hash/proof; a verifier\n", *workers, ceil)
-	fmt.Printf("    cannot exceed its own SHA-256d rate, and reading a ~1.5KB proof per verify caps it\n")
-	fmt.Printf("    further by memory bandwidth — so 1e10+ verif/s is a FABRIC aggregate, not one box).\n")
-	fmt.Printf("  fabric (shares-nothing, linear): 1e10 verif/s = %.0f nodes ; 1e11 = %.0f nodes\n",
+	// --- Single-box CEILING (whole-block verify, root-checked) + fabric to 1e10/1e11. ---
+	ceil, ok := bench.VerifyWholeBlockThroughput(1<<16, *workers, *dur)
+	fmt.Printf("\n## Single-box verify CEILING — whole-block (rebuild forest, check root), root-correct=%v\n", ok)
+	fmt.Printf("  one %d-core box: %.3e tx-verifications/s (hash-bound; ~1 SHA-256d/tx). A verifier\n", *workers, ceil)
+	fmt.Printf("    cannot exceed its own SHA-256d rate, so 1e10+ verif/s is a shares-nothing FABRIC\n")
+	fmt.Printf("    aggregate (= nodes x per-node, exactly). Extrapolation from the measured per-node rate:\n")
+	for _, n := range []int{32, 64, 128, 512} {
+		fmt.Printf("    %4d servers -> %.3e verif/s%s\n", n, ceil*float64(n),
+			map[bool]string{true: "  (>= 1e10)", false: ""}[ceil*float64(n) >= 1e10])
+	}
+	fmt.Printf("  => 1e10 verif/s ~= %.0f nodes (32 easy; 64/128 as buffer); 1e11 ~= %.0f nodes.\n",
 		1e10/ceil, 1e11/ceil)
 
 	// --- Shares-nothing scale-out (Lever C): the fabric aggregate = per-server x N. ---
