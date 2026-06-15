@@ -68,9 +68,14 @@ change. **Depth-independence holds at 10× the target** (depth 460: A ≈ 3.5). 
 inclusion leaf is the **consensus TXID** (`VerifyToBlockRoot` with `leaf=txid, l0=nil`); the
 MTxID field tree is an optional secondary commitment.
 
-**Full SPV protocol is tested** (`walletbob.TestE2E_SPV_PushToNodes`): Alice→Bob signed Tx +
-inclusion path → Bob verifies locally (path **and** signature, unspent, value) → Alice and Bob
-**push the Tx to 2–3 nodes** → nodes re-validate and accept; a tampered Tx is rejected.
+**Full SPV protocol is tested**, both acquisition modes:
+- **Push** (`walletbob.TestE2E_SPV_PushToNodes`): Alice→Bob signed Tx + inclusion path → Bob verifies
+  locally (path **and** signature, unspent, value) → Alice and Bob **push the Tx to 2–3 nodes** →
+  nodes re-validate; tampered Tx rejected.
+- **Pull / proof acquisition** (`fabric.Fetch`, `fabric.TestFetchInclusion_SPVPull`): Bob has a new
+  TXID and **asks a node for the Merkle path + the block header** (`ProofSource`), assembles the
+  inclusion proof, and verifies it against his most-work header chain. Unknown tx errors; tampered
+  path or off-chain header is rejected. This is the classic "get the Merkle proof from a node" step.
 
 **Honest ceiling:** a complete payment is path-verify **plus one ECDSA signature verify**. The
 **signature** — not hashing, not the path — is the real per-payment ceiling. The in-repo secp256k1

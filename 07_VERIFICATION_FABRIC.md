@@ -220,10 +220,15 @@ complete decode+fold work for a path of that length. The measurement is direct, 
 **A ≈ 3.5** — depth-independence holds an order of magnitude beyond the target, because the shared
 upper path is amortised and the per-proof cost is decode-bound (proof size grows only logarithmically).
 
-**SPV protocol tested end to end.** The full flow — Bob→Alice request, Alice→Bob signed Tx + inclusion
-path, Bob verifies LOCALLY (path **and** signature, unspent, value, alert-quiet), then Alice **and**
-Bob **push the Tx to 2–3 nodes** which re-validate and accept; a tampered Tx is rejected — is tested in
-`walletbob.TestE2E_SPV_PushToNodes`.
+**SPV protocol tested end to end (both acquisition modes).**
+- *Push:* Bob→Alice request, Alice→Bob signed Tx + inclusion path, Bob verifies LOCALLY (path **and**
+  signature, unspent, value, alert-quiet), then Alice **and** Bob **push the Tx to 2–3 nodes** which
+  re-validate; a tampered Tx is rejected — `walletbob.TestE2E_SPV_PushToNodes`.
+- *Pull (proof acquisition):* Bob has a new TXID and **pulls the Merkle path + the block header from a
+  node** (`fabric.Fetch` over `ProofSource`: TXID→subtree→block→header), then verifies inclusion
+  against his most-work header chain — `fabric.TestFetchInclusion_SPVPull`. Getting the Merkle path
+  and the block for a new tx is itself part of SPV, and it is tested (unknown tx errors; tampered path
+  or off-chain header rejected).
 
 **Server-scale measured summary (`go run ./cmd/verifyfabric`, 64-core Xeon Gold 6430):**
 - *Sparse per-proof model* (each proof folded independently, L1 non-amortised): **A ≈ 0.27–0.68**
