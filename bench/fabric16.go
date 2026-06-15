@@ -19,6 +19,44 @@ import (
 // Avx512Available reports whether the 16-lane kernel runs on this CPU.
 func Avx512Available() bool { return sha256mb.Available() }
 
+// PeakVerifyCeiling measures the single-box SHA-256d ceiling using the AVX-512
+// 16-lane kernel across `cores`. In the maximal whole-block multiproof regime the
+// per-proof marginal cost collapses to ~1 hash, so this hash/s rate is the PHYSICAL
+// upper bound on inclusion-verifications/s for ONE box — no verifier can exceed its
+// own hash rate. (10^10+ verif/s is therefore a multi-node fabric aggregate, not a
+// single-box number; reaching it = ceil(target / this) shares-nothing nodes.)
+func PeakVerifyCeiling(cores int, dur time.Duration) float64 {
+	if cores < 1 {
+		cores = 1
+	}
+	var total uint64
+	var wg sync.WaitGroup
+	deadline := time.Now().Add(dur)
+	wg.Add(cores)
+	for w := 0; w < cores; w++ {
+		go func() {
+			defer wg.Done()
+			h := sha256mb.NewHasher()
+			var m [16][64]byte
+			var o [16][32]byte
+			var n uint64
+			for time.Now().Before(deadline) {
+				for i := 0; i < 4096; i++ {
+					h.DoubleSHA256x16(&m, &o)
+				}
+				n += 4096 * 16
+			}
+			atomic.AddUint64(&total, n)
+		}()
+	}
+	wg.Wait()
+	secs := dur.Seconds()
+	if secs <= 0 {
+		secs = 1
+	}
+	return float64(total) / secs
+}
+
 // fold16 folds 16 proofs' L1 paths in lockstep using the 16-lane kernel via a
 // reusable (allocation-free) hasher, returning the 16 resulting subtree roots. All 16
 // L1 paths must have the same length. order: parent = Right ? H(node‖sib) : H(sib‖node).

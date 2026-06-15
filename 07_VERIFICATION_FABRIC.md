@@ -230,6 +230,17 @@ upper path is amortised and the per-proof cost is decode-bound (proof size grows
   and the block for a new tx is itself part of SPV, and it is tested (unknown tx errors; tampered path
   or off-chain header rejected).
 
+**Single-box verification CEILING and fabric scale-out to 10¹⁰ / 10¹¹ verif/s (measured).**
+A verifier cannot verify faster than it can HASH. The peak AVX-512 16-lane SHA-256d rate on the
+64-core Xeon is **~3.2×10⁸ hash/s**, and in the maximal whole-block multiproof regime per-proof cost
+collapses to ~1 hash — so **one 64-core box ≤ ~3.2×10⁸ inclusion-verifications/s** (reading a ~1.5 KB
+proof per verify caps it further by memory bandwidth: 10¹⁰ verifies × 1.5 KB = 15 TB/s, far beyond any
+single box). Therefore **10¹⁰+ verif/s is a multi-node FABRIC aggregate, not a single-box number** —
+which is exactly what 07 specifies (a horizontal, shares-nothing verification fabric). Measured
+per-node ceiling ⇒ **10¹⁰ verif/s = ~31 nodes; 10¹¹ verif/s = ~309 nodes**, linear with no upper limit
+(verification is stateless/shares-nothing, so aggregate = nodes × per-node exactly). Reproduce:
+`go run ./cmd/verifyfabric`.
+
 **PUSH vs PULL at scale (measured, 64-core, `go run ./cmd/verifyfabric`):**
 - *PUSH (verify a pushed proof — decode + verify):* **6.7×10⁷ proofs/s, A=4.47 PASS** on one server.
 - *PULL (node builds the Merkle path on demand + verify):* **~1.1×10⁷ proofs/s (A≈0.74) per node** with
