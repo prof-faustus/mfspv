@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: gofmt (must be clean)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+          echo "gofmt: clean"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test (full, no cache)
+        run: go test -count=1 ./...
+
+      - name: order-independence (shuffle)
+        run: go test -shuffle=on -count=1 ./...
+
+      - name: mutation gate (06 §4.4 / §10 — 17/17 must be killed)
+        run: go run ./cmd/mutate
+
+      - name: reproduce artifacts (06 §8)
+        run: go run ./cmd/mfspv -eval
