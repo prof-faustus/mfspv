@@ -2,7 +2,9 @@ package fabric
 
 import (
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"mfspv/commitment"
 	"mfspv/teranode"
@@ -74,4 +76,78 @@ func TestFabricBar(t *testing.T) {
 		t.Skip("throughput benchmark skipped in -short")
 	}
 	RunReport(os.Stdout)
+}
+
+// Codec round-trips and decoded proofs verify.
+func TestCodecRoundTrip(t *testing.T) {
+	proofs, chain, err := BuildBlock(8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := EncodeBatch(proofs)
+	dec, err := DecodeBatch(wire, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dec) != len(proofs) {
+		t.Fatalf("decoded %d want %d", len(dec), len(proofs))
+	}
+	if ok, _ := BatchVerify(DefaultHasher(), dec, chain); !ok {
+		t.Fatal("decoded batch failed to verify")
+	}
+	// truncation rejected
+	if _, err := DecodeBatch(wire[:len(wire)-5], nil); err == nil {
+		t.Fatal("truncated batch accepted")
+	}
+}
+
+// VerifyWire (streaming, zero-alloc) agrees with BatchVerify and rejects tampering.
+func TestVerifyWire(t *testing.T) {
+	proofs, chain, err := BuildBlock(64, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := EncodeBatch(proofs)
+	v := NewVerifier()
+	ok, _, np := v.VerifyWire(DefaultHasher(), wire, chain)
+	if !ok || np != len(proofs) {
+		t.Fatalf("VerifyWire ok=%v np=%d want %d", ok, np, len(proofs))
+	}
+	// reuse the same verifier (maps cleared) — must still pass
+	if ok, _, _ := v.VerifyWire(DefaultHasher(), wire, chain); !ok {
+		t.Fatal("reused verifier failed")
+	}
+	// tamper a leaf byte in the wire -> reject
+	bad := make([]byte, len(wire))
+	copy(bad, wire)
+	bad[100] ^= 0xff
+	if ok, _, _ := v.VerifyWire(DefaultHasher(), bad, chain); ok {
+		t.Fatal("tampered wire accepted")
+	}
+}
+
+// TestCompletePipelineMeetsBar asserts the COMPLETE real pipeline clears the bar on
+// a target-class box (>=32 cores). It SKIPS on small CI runners (the bar is defined
+// for the deployment server), but always checks correctness of the real path.
+func TestCompletePipelineMeetsBar(t *testing.T) {
+	if testing.Short() {
+		t.Skip("throughput skipped in -short")
+	}
+	cores := runtime.NumCPU()
+	wire, chain, err := BuildBatchAtDepth(46, 1<<18) // depth 46 == 10^11 tx/s level
+	if err != nil {
+		t.Fatal(err)
+	}
+	// correctness of the real decode+verify path (always):
+	if ok, _, np := NewVerifier().VerifyWire(DefaultHasher(), wire, chain); !ok || np != 1<<18 {
+		t.Fatalf("real pipeline verify failed ok=%v np=%d", ok, np)
+	}
+	if cores < 32 {
+		t.Skipf("bar (A>=1.5) is defined for a target server; this box has %d cores", cores)
+	}
+	v := MeasureStreamThroughput(DefaultHasher(), wire, chain, cores, 500*time.Millisecond)
+	if v < Bar {
+		t.Fatalf("complete pipeline BELOW bar at depth 46: %.3e verif/s (A=%.2f)", v, v/Bar)
+	}
+	t.Logf("depth-46 complete pipeline: %.3e verif/s A=%.2f PASS", v, v/Bar)
 }
