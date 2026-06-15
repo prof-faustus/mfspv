@@ -271,6 +271,21 @@ func (n *MockNode) HeaderFor(blockHash Hash) ([80]byte, error) {
 	return sb.header, nil
 }
 
+// ServeInto serves a full inclusion proof (L1 path, subtree root, L2 path, header)
+// for txid WITHOUT allocation, writing the paths into the caller's reusable buffers
+// (give them capacity >= 20 / block depth). Lock-free over immutable sealed data —
+// this is the allocation-free proof-serving path for PULL at scale.
+func (n *MockNode) ServeInto(txid Hash, l1dst, l2dst []PathElem) (l1, l2 []PathElem, subtreeRoot Hash, header [80]byte, ok bool) {
+	e, found := n.txIndex[txid]
+	if !found {
+		return nil, nil, Hash{}, [80]byte{}, false
+	}
+	sb := n.blocks[e.blockHash]
+	l1, _ = commitment.MerklePathInto(sb.subtreeTrees[e.subtreeIndex], e.leafIndex, l1dst)
+	l2, _ = commitment.MerklePathInto(sb.blockLayers, e.subtreeIndex, l2dst)
+	return l1, l2, sb.subtreeRoots[e.subtreeIndex], sb.header, true
+}
+
 func (n *MockNode) LocateTx(txid Hash) (Hash, error) {
 	e, ok := n.txIndex[txid]
 	if !ok {

@@ -135,6 +135,31 @@ func MerklePath(layers [][]Hash, index int) ([]PathElem, error) {
 	return path, nil
 }
 
+// MerklePathInto is the allocation-free form of MerklePath: it writes the leaf->root
+// sibling path into dst (reslicing dst[:0]); if dst has enough capacity no allocation
+// occurs. Used by a node to serve proofs at scale without per-request allocation.
+func MerklePathInto(layers [][]Hash, index int, dst []PathElem) ([]PathElem, error) {
+	if len(layers) == 0 || index < 0 || index >= len(layers[0]) {
+		return nil, errors.New("commitment: leaf index out of range")
+	}
+	dst = dst[:0]
+	idx := index
+	for level := 0; level < len(layers)-1; level++ {
+		cur := layers[level]
+		if idx%2 == 0 {
+			sib := idx
+			if idx+1 < len(cur) {
+				sib = idx + 1
+			}
+			dst = append(dst, PathElem{Sibling: cur[sib], Right: true})
+		} else {
+			dst = append(dst, PathElem{Sibling: cur[idx-1], Right: false})
+		}
+		idx /= 2
+	}
+	return dst, nil
+}
+
 // Fold collapses a leaf up its path to the implied root. It is the single
 // verification primitive used everywhere.
 func Fold(leaf Hash, path []PathElem) Hash {
