@@ -72,8 +72,8 @@ func TestCapacityEquation(t *testing.T) {
 
 // The 07 §7 benchmark (measured). Skipped in -short; run with: go test -run TestFabricBar -v ./fabric
 func TestFabricBar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("throughput benchmark skipped in -short")
+	if testing.Short() || runtime.NumCPU() < 32 {
+		t.Skip("target-box throughput benchmark (needs a many-core box; skipped on CI/-short)")
 	}
 	RunReport(os.Stdout)
 }
@@ -130,20 +130,22 @@ func TestVerifyWire(t *testing.T) {
 // a target-class box (>=32 cores). It SKIPS on small CI runners (the bar is defined
 // for the deployment server), but always checks correctness of the real path.
 func TestCompletePipelineMeetsBar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("throughput skipped in -short")
-	}
 	cores := runtime.NumCPU()
-	wire, chain, err := BuildBatchAtDepth(46, 1<<18) // depth 46 == 10^11 tx/s level
+	// Small correctness check of the real decode+verify path at depth 46 (always,
+	// cheap — also runs on CI): 4096 real proofs.
+	sw, sc, err := BuildBatchAtDepth(46, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// correctness of the real decode+verify path (always):
-	if ok, _, np := NewVerifier().VerifyWire(DefaultHasher(), wire, chain); !ok || np != 1<<18 {
+	if ok, _, np := NewVerifier().VerifyWire(DefaultHasher(), sw, sc); !ok || np != 4096 {
 		t.Fatalf("real pipeline verify failed ok=%v np=%d", ok, np)
 	}
-	if cores < 32 {
-		t.Skipf("bar (A>=1.5) is defined for a target server; this box has %d cores", cores)
+	if testing.Short() || cores < 32 {
+		t.Skipf("bar (A>=1.5) is a target-server benchmark; this box has %d cores", cores)
+	}
+	wire, chain, err := BuildBatchAtDepth(46, 1<<18) // depth 46 == 10^11 tx/s level
+	if err != nil {
+		t.Fatal(err)
 	}
 	v := MeasureStreamThroughput(DefaultHasher(), wire, chain, cores, 500*time.Millisecond)
 	if v < Bar {
