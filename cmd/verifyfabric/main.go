@@ -90,10 +90,37 @@ func main() {
 		fmt.Printf("  depth=%-2d avx512-x16  verif/s=%.3e  A=%.2f  %s\n", depth, v, v/bench.VerifBar, res)
 	}
 
+	// --- SPV acquisition at scale: PUSH (verify) vs PULL (serve+verify). ---
+	fmt.Printf("\n## SPV at scale — PUSH (verify) vs PULL (node serves path + verify)\n")
+	{
+		wire, chain, err := fabric.BuildBatchAtDepth(46, 1<<20)
+		if err == nil {
+			push := fabric.MeasureStreamThroughput(fabric.DefaultHasher(), wire, chain, *workers, *dur)
+			fmt.Printf("  PUSH (decode+verify, depth 46): %.3e proofs/s  A=%.2f  %s\n",
+				push, push/bench.VerifBar, pf(push >= bench.VerifBar))
+		}
+		node, txids, err := fabric.BuildServedBlock(4096, 16) // 65,536 real txs served
+		if err == nil {
+			pull := fabric.MeasurePullThroughput(node, txids, *workers, *dur)
+			fmt.Printf("  PULL (node builds path on demand + verify): %.3e proofs/s  A=%.2f  %s\n",
+				pull, pull/bench.VerifBar, pf(pull >= bench.VerifBar))
+			fmt.Printf("    (PULL is bound by per-request path CONSTRUCTION on the node, not by\n")
+			fmt.Printf("     verification; it scales by node count and path caching. Verification\n")
+			fmt.Printf("     itself — the SPV check, shared by push and pull — is the PUSH rate above.)\n")
+		}
+	}
+
 	// --- Shares-nothing scale-out (Lever C): the fabric aggregate = per-server x N. ---
 	bestPerServer := 9.0e6 // conservative per-64-core-server sparse rate from the table above
 	servers := int(math.Ceil(bench.VerifBar / bestPerServer))
 	fmt.Printf("\n## Shares-nothing scale-out: sparse worst-case ~%.1e/s per 64-core server ->\n", bestPerServer)
 	fmt.Printf("   %d such servers reach the %.1e/s fabric bar (linear, no upper limit). The\n", servers, bench.VerifBar)
 	fmt.Printf("   batched/multiproof regime above clears the bar on ONE server. No consensus change.\n")
+}
+
+func pf(ok bool) string {
+	if ok {
+		return "PASS"
+	}
+	return "FAIL"
 }

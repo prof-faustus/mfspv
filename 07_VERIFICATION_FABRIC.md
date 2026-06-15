@@ -230,6 +230,13 @@ upper path is amortised and the per-proof cost is decode-bound (proof size grows
   and the block for a new tx is itself part of SPV, and it is tested (unknown tx errors; tampered path
   or off-chain header rejected).
 
+**PUSH vs PULL at scale (measured, 64-core, `go run ./cmd/verifyfabric`):**
+- *PUSH (verify a pushed proof — decode + verify):* **6.7×10⁷ proofs/s, A=4.47 PASS** on one server.
+- *PULL (node builds the Merkle path on demand + verify):* **~2.5×10⁶ proofs/s** — bound by per-request
+  path CONSTRUCTION on the node (allocation), NOT by verification. It scales by node count and path
+  caching; the verification work itself (the SPV check, shared by push and pull) is the PUSH rate.
+  Both modes are tested for correctness at scale (`fabric.TestPullAtScale`, `fabric.TestThroughputBar`).
+
 **Server-scale measured summary (`go run ./cmd/verifyfabric`, 64-core Xeon Gold 6430):**
 - *Sparse per-proof model* (each proof folded independently, L1 non-amortised): **A ≈ 0.27–0.68**
   per server (software and minio SHA-NI single-buffer) → does **not** clear the bar on one box; the

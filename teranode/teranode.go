@@ -225,9 +225,10 @@ func (n *MockNode) SealBlock(txids []Hash, commitAccumulator bool) (Hash, error)
 
 // --- ProofSource ---
 
+// Proof-serving reads (SubtreePathFor, BlockPathFor, HeaderFor, LocateTx, Contains)
+// are LOCK-FREE: sealed-block data is immutable, so they are safe for unbounded
+// concurrent reads (proof serving at scale) provided no concurrent SealBlock/mutation.
 func (n *MockNode) SubtreePathFor(txid Hash) ([]PathElem, Hash, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	e, ok := n.txIndex[txid]
 	if !ok {
 		return nil, Hash{}, ErrUnknownTx
@@ -241,8 +242,6 @@ func (n *MockNode) SubtreePathFor(txid Hash) ([]PathElem, Hash, error) {
 }
 
 func (n *MockNode) BlockPathFor(subtreeRoot Hash, blockHash Hash) ([]PathElem, Hash, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	sb, ok := n.blocks[blockHash]
 	if !ok {
 		return nil, Hash{}, ErrUnknownBlock
@@ -265,8 +264,6 @@ func (n *MockNode) BlockPathFor(subtreeRoot Hash, blockHash Hash) ([]PathElem, H
 }
 
 func (n *MockNode) HeaderFor(blockHash Hash) ([80]byte, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	sb, ok := n.blocks[blockHash]
 	if !ok {
 		return [80]byte{}, ErrUnknownBlock
@@ -275,8 +272,6 @@ func (n *MockNode) HeaderFor(blockHash Hash) ([80]byte, error) {
 }
 
 func (n *MockNode) LocateTx(txid Hash) (Hash, error) {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	e, ok := n.txIndex[txid]
 	if !ok {
 		return Hash{}, ErrUnknownTx
@@ -341,8 +336,6 @@ func (n *MockNode) ProveHeaderInAccumulator(targetHash, carrierHash Hash) ([]Pat
 // --- HeaderChain ---
 
 func (n *MockNode) Contains(h [80]byte) bool {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
 	bh := commitment.DoubleSHA256(h[:])
 	sb, ok := n.blocks[bh]
 	if !ok {
