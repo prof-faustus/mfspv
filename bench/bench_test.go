@@ -146,14 +146,25 @@ func TestEQ3_ScalingLawRegression(t *testing.T) {
 			path[i] = commitment.PathElem{Sibling: commitment.DoubleSHA256([]byte{byte(i)}), Right: i%2 == 0}
 		}
 		root := commitment.Fold(leaf, path)
+		// Per-fold latency must reflect compute (∝ depth), not scheduler jitter. Take
+		// the MINIMUM over several repeats per depth: the fastest sample is the one
+		// least disturbed by GC/scheduling, so the regression sees clean compute time.
+		// This keeps the scaling-law test deterministic under CPU load (min-of-K is the
+		// standard robust micro-timing; the absolute R^2 bar then holds reliably).
 		const iters = 20000
-		start := time.Now()
-		for i := 0; i < iters; i++ {
-			if commitment.Fold(leaf, path) != root {
-				t.Fatal("fold mismatch")
+		const reps = 7
+		ns := math.Inf(1)
+		for r := 0; r < reps; r++ {
+			start := time.Now()
+			for i := 0; i < iters; i++ {
+				if commitment.Fold(leaf, path) != root {
+					t.Fatal("fold mismatch")
+				}
+			}
+			if cur := float64(time.Since(start).Nanoseconds()) / iters; cur < ns {
+				ns = cur
 			}
 		}
-		ns := float64(time.Since(start).Nanoseconds()) / iters
 		xsDepth = append(xsDepth, float64(d))
 		xsT = append(xsT, math.Exp2(float64(d)))
 		ys = append(ys, ns)
