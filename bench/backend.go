@@ -68,7 +68,7 @@ func MultiBufScalarBackend(lanes int) Backend {
 // because Go folds it into the software path automatically; CapabilityNote() records
 // whether the measured rate indicates hardware acceleration.
 func AvailableBackends() []Backend {
-	return []Backend{SoftwareBackend(), MultiBufScalarBackend(8)}
+	return []Backend{SoftwareBackend(), MinioBackend()}
 }
 
 // ShaSoftwareReference is a conservative pure-software SHA-256d/s/core figure used

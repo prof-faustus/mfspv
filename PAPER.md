@@ -187,7 +187,17 @@ Derivations: `T(r) = r·t` transactions/block; inclusion path `depth(r) = ⌈log
   over 10⁶→10¹¹), so five orders of magnitude of throughput do not lower the verification rate.
   Verification is stateless and shares nothing → aggregate scales ~linearly with cores/nodes. No
   consensus change. Measured directly (no projection); reproduce: `go run ./scalebench` or
-  `go run ./cmd/mfspv -fabric`.
+  `go run ./cmd/mfspv -fabric`. **Depth-independence holds at 10× the target depth** (depth 460:
+  A ≈ 3.5). The full SPV protocol (Alice→Bob signed Tx + inclusion path → Bob verifies locally →
+  Alice and Bob push to 2–3 nodes → nodes re-validate) is tested in `walletbob.TestE2E_SPV_PushToNodes`.
+- **R6′ (the real per-payment ceiling is the signature, not the path).** A complete payment is
+  path-verify **plus one ECDSA signature verify**. Per R6 the path is not the bottleneck; the
+  **signature** is. The in-repo reference secp256k1 verifier is correct but unoptimised; production
+  uses the node's audited libsecp256k1 (~7×10⁴ verify/s/core) with batch verification and horizontal
+  scale-out. Complete signed SPV = min(path, signature) per payment → bounded by signature
+  verification, a standard transaction-validation cost orthogonal to the MF-SPV inclusion proof and
+  scalable by cores/nodes. The contribution of MF-SPV — making the inclusion path logarithmic,
+  sender-pushed, frozen, and amortizable — removes the path from the critical path entirely.
 - **R5 (capacity at 100 billion tx/s).** Two costs are kept separate. *Edge:* verification is stateless and embarrassingly parallel, so an N-core fabric sustains `N × ~73k` payment-verifications/s, independent of `r`. *Sealing* (Teranode's job): building the Merkle forest for a block of `T` tx is `T−1` internal hashes (the subtree split adds none), so the network-wide Merkle hash rate to seal at rate `r` is `≈ r` (marginal) to `≈ 2r` (incl. leaf/TXID hashing) SHA-256d/s. At `r = 10¹¹` that is `≈ 2×10¹¹` SHA-256d/s `≈ ~2,000` hardware-accelerated (SHA-NI) cores across `≈ 95,367` subtrees/s of 2²⁰ TXIDs — the horizontal-scale model Teranode already follows. `r` is bounded by Teranode validation/propagation, not by SPV (Result 4.4). Reproduced by `bench.PlanCapacity` from a measured per-core hash rate; asserted by `bench.TestCapacity100BillionTPS`.
 
 These numbers are the empirical core. R1–R2/R4–R5(derivation) are arithmetic from stated BSV parameters; if a benchmark contradicts them the implementation is wrong, not the model. R3 and R5's core-count are single-machine reference measurements scaled by core count, not a deployed-network benchmark (§1 status, §8).

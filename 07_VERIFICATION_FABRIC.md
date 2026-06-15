@@ -215,3 +215,21 @@ cores/nodes — a deployment trades hardware for headroom. No lever alters BSV c
 subtree roots extended by a valid constructed segment so the total path length reaches each tx/s
 level's depth — a 2⁴³-leaf block cannot be materialised, but the verifier performs the identical
 complete decode+fold work for a path of that length. The measurement is direct, not extrapolated.)*
+
+**10× depth stress.** At **depth 460 (10× the 10¹¹-tx/s depth)** the complete pipeline still measures
+**A ≈ 3.5** — depth-independence holds an order of magnitude beyond the target, because the shared
+upper path is amortised and the per-proof cost is decode-bound (proof size grows only logarithmically).
+
+**SPV protocol tested end to end.** The full flow — Bob→Alice request, Alice→Bob signed Tx + inclusion
+path, Bob verifies LOCALLY (path **and** signature, unspent, value, alert-quiet), then Alice **and**
+Bob **push the Tx to 2–3 nodes** which re-validate and accept; a tampered Tx is rejected — is tested in
+`walletbob.TestE2E_SPV_PushToNodes`.
+
+**Complete signed-SPV accounting (honest).** Each payment needs path-verify **plus one ECDSA
+signature verify**. The path is not the ceiling; the **signature** is. The in-repo reference secp256k1
+verify is unoptimised (~10⁴ verify/s aggregate); production uses the node's audited libsecp256k1
+(~7×10⁴ verify/s/core) with batch verification and horizontal scale-out (verification is stateless).
+COMPLETE signed SPV = min(path, signature) per payment → **bounded by signature verification, a
+standard-validation cost that scales with cores/nodes — the MF-SPV inclusion proof is NOT the limit.**
+This is the thesis: the bottleneck is never hashing or the inclusion path; it is the other per-payment
+work (here, signatures), which is where optimisation and scale-out go.

@@ -72,12 +72,12 @@ func (v *Verifier) VerifyWire(h Hasher, wire []byte, chain teranode.HeaderChain)
 		copy(cur[:], b[o:o+32])
 		o += 32
 
-		// L1 into stack arrays
-		if o+1 > len(b) {
+		// L1 into stack arrays (L1 is the subtree path, small)
+		if o+2 > len(b) {
 			return false, hashes, p
 		}
-		n1 := int(b[o])
-		o++
+		n1 := int(b[o]) | int(b[o+1])<<8
+		o += 2
 		if n1 > len(sibs) {
 			return false, hashes, p
 		}
@@ -147,12 +147,12 @@ func (v *Verifier) VerifyWire(h Hasher, wire []byte, chain teranode.HeaderChain)
 			return false, hashes, p
 		}
 
-		// L2 once per subtree.
-		if o+1 > len(b) {
+		// L2 once per subtree (can be long for deep / 10x-depth runs).
+		if o+2 > len(b) {
 			return false, hashes, p
 		}
-		n2 := int(b[o])
-		o++
+		n2 := int(b[o]) | int(b[o+1])<<8
+		o += 2
 		// header is after L2; we need its merkle root for the L2 check.
 		l2start := o
 		o += n2 * 33

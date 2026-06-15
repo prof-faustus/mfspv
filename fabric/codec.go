@@ -10,17 +10,20 @@ import (
 // Benchmarks decode from these bytes before verifying, so the measured cost is the
 // real end-to-end path (deserialize + verify), not a hash-only microbenchmark.
 //
-// Per proof: Leaf[32] | L1count u8 | L1[ Right u8, Sib[32] ]* | SubtreeRoot[32]
-//            | L2count u8 | L2[ Right u8, Sib[32] ]* | Header[80]
+// Per proof: Leaf[32] | L1count u16 | L1[ Right u8, Sib[32] ]* | SubtreeRoot[32]
+//            | L2count u16 | L2[ Right u8, Sib[32] ]* | Header[80]
 // A batch is the length-prefixed concatenation: count u32, then each proof
-// length-prefixed (u32) for independent decoding.
+// length-prefixed (u32) for independent decoding. Path counts are u16 so depths
+// well beyond the nominal 255 (e.g. 10x-depth stress runs) encode correctly.
 
 var errTruncated = errors.New("fabric: truncated proof bytes")
 
 // EncodeProof appends the wire encoding of p to dst.
 func EncodeProof(dst []byte, p *Proof) []byte {
+	var u [2]byte
 	dst = append(dst, p.Leaf[:]...)
-	dst = append(dst, byte(len(p.L1)))
+	binary.LittleEndian.PutUint16(u[:], uint16(len(p.L1)))
+	dst = append(dst, u[:]...)
 	for i := range p.L1 {
 		if p.L1[i].Right {
 			dst = append(dst, 1)
@@ -30,7 +33,8 @@ func EncodeProof(dst []byte, p *Proof) []byte {
 		dst = append(dst, p.L1[i].Sibling[:]...)
 	}
 	dst = append(dst, p.SubtreeRoot[:]...)
-	dst = append(dst, byte(len(p.L2)))
+	binary.LittleEndian.PutUint16(u[:], uint16(len(p.L2)))
+	dst = append(dst, u[:]...)
 	for i := range p.L2 {
 		if p.L2[i].Right {
 			dst = append(dst, 1)
@@ -74,15 +78,15 @@ func (d *decoder) take(n int) ([]byte, bool) {
 }
 
 func decodePath(d *decoder) ([]PathElem, bool) {
-	cb, ok := d.take(1)
+	cb, ok := d.take(2)
 	if !ok {
 		return nil, false
 	}
-	n := int(cb[0])
+	n := int(binary.LittleEndian.Uint16(cb))
 	if n == 0 {
 		return nil, true
 	}
-	if n > 64 { // depth ceiling guard (>255 impossible; subtree<=20, block modest)
+	if n > 4096 { // generous ceiling (supports 10x-depth stress runs)
 		return nil, false
 	}
 	p := make([]PathElem, n)

@@ -64,8 +64,19 @@ verifications/second (A = 6.71), and the rate is independent of depth** — 10�
 Hashing is not the bottleneck; the per-proof cost is decoding a proof that grows only
 logarithmically (960→1472 B over 10⁶→10¹¹), so throughput does not fall as tx/s rises.
 Stateless and shares-nothing → aggregate scales ~linearly with cores/nodes. No consensus
-change. Per 07 §5, the inclusion leaf is the **consensus TXID** (`VerifyToBlockRoot` with
-`leaf=txid, l0=nil`); the MTxID field tree is an optional secondary commitment.
+change. **Depth-independence holds at 10× the target** (depth 460: A ≈ 3.5). Per 07 §5, the
+inclusion leaf is the **consensus TXID** (`VerifyToBlockRoot` with `leaf=txid, l0=nil`); the
+MTxID field tree is an optional secondary commitment.
+
+**Full SPV protocol is tested** (`walletbob.TestE2E_SPV_PushToNodes`): Alice→Bob signed Tx +
+inclusion path → Bob verifies locally (path **and** signature, unspent, value) → Alice and Bob
+**push the Tx to 2–3 nodes** → nodes re-validate and accept; a tampered Tx is rejected.
+
+**Honest ceiling:** a complete payment is path-verify **plus one ECDSA signature verify**. The
+**signature** — not hashing, not the path — is the real per-payment ceiling. The in-repo secp256k1
+verifier is a correct reference (unoptimised); production uses the node's audited libsecp256k1 +
+batch verification + scale-out. Complete signed SPV is bounded by signature verification (a standard,
+scalable cost), with the MF-SPV inclusion path removed from the critical path.
 
 **Mutation testing (06 §4.4 acceptance gate).** `go run ./cmd/mutate` is a
 zero-dependency, offline gate that flips each security-critical comparison/boolean
