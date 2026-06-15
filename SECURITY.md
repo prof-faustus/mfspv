@@ -79,9 +79,17 @@ raw ECDSA but is rejected by the payment layer).
 
 ## Residual, documented (not code defects)
 
-- **secp256k1 signer is `math/big`-based, not constant-time.** Correct and
-  dependency-free; constant-time hardening / swapping for the node's audited curve
-  is a deployment task. Inclusion soundness does not depend on it.
+- **secp256k1 signer — constant-time scalar multiplication (the same secp256k1
+  curve).** Signing's secret `k·G` step now uses a constant-time implementation
+  (`crypto/ct.go`): fixed 4×64-bit GF(p) limbs, complete (exception-free) a=0
+  addition formulas, double-and-add-ALWAYS with a masked select, and Fermat
+  inversion over the public exponent — no data-dependent branches or memory
+  indexing on the secret scalar. Validated by a differential oracle against the
+  big.Int reference (200k field cases, 2k scalar cases) and the 2G/RFC-6979 KATs;
+  signatures are byte-identical to before. **Residual:** the mod-n scalar steps
+  (`k⁻¹`, `r·d`, `+z`) still use `math/big` (variable-time); for production the
+  node's audited libsecp256k1 remains the recommendation. Inclusion soundness does
+  not depend on the signer.
 - **Live Teranode wiring.** Interfaces are read-only by construction (I-TA1); the
   `MockNode` builds real trees and a real accumulator. Binding to a pinned Teranode
   revision is the remaining integration step (01 §7 dependency #2).

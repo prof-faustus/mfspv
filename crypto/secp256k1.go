@@ -320,8 +320,11 @@ func (k *PrivateKey) Sign(hash []byte) (*Signature, error) {
 		if i > 0 { // extremely unlikely retry path; perturb deterministically
 			kNonce = rfc6979Nonce(k.D, sha256sum(append(hash, byte(i))))
 		}
-		rx, _ := scalarBaseMult(kNonce)
-		r := new(big.Int).Mod(rx, curveN)
+		// k*G via the constant-time scalar multiplication (ct.go): the secret nonce
+		// drives only masked selects, not branches. (Same secp256k1 curve.)
+		R := scalarMultCT(scalarBits(kNonce), ctBaseG)
+		rxFe := R.affineX()
+		r := new(big.Int).Mod(rxFe.big(), curveN)
 		if r.Sign() == 0 {
 			continue
 		}

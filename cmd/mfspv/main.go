@@ -138,6 +138,7 @@ func claimsCSV() string {
 		{"R6", "verifier throughput: dense batch A>=1.5 (07)", "M", "fabric.TestFabricBar (go run ./cmd/mfspv -fabric)"},
 		{"LEAF", "inclusion leaf = consensus TXID (07 §5)", "M", "fabric.TestLeafIsConsensusTXID"},
 		{"KAT", "sha256d/2G/RFC6979 known-answer", "M", "crypto.TestKAT_TwoG;TestKAT_RFC6979Nonce;commitment.TestKAT_DoubleSHA256"},
+		{"CT", "constant-time k*G == big.Int reference", "M", "crypto.TestScalarMultCTvsReference;TestFieldVsBigInt"},
 		{"DIFF", "merkle vs independent oracle (incl odd)", "M", "commitment.TestDifferentialMerkle"},
 	}
 	var sb strings.Builder
